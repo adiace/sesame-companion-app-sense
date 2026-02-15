@@ -1,6 +1,6 @@
 # Sesame Robot Companion App
 
-AI-powered natural language interface for the Sesame robot using Google Gemini.
+AI-powered natural language interface for the Sesame robot using Google Gemini and PyTTSx3.
 
 ## Setup
 

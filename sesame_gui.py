@@ -19,8 +19,8 @@ class SesameGUI:
         self.root.geometry("900x700")
         self.root.minsize(800, 600)
         
-        self.robot_ip = os.getenv("SESAME_ROBOT_IP", "10.204.249.151")
-        self.gemini_api_key = os.getenv("GEMINI_API_KEY", "AIzaSyDeyEAEJ4W9gUCOlNziL1BHynaRbXZ-pV8")
+        self.robot_ip = os.getenv("SESAME_ROBOT_IP", "192.168.1.1")
+        self.gemini_api_key = os.getenv("GEMINI_API_KEY", "")
         self.tts_engine = tk.StringVar(value=os.getenv("TTS_ENGINE", "pyttsx3"))
         self.voice_enabled = tk.BooleanVar(value=True)
         self.wake_word_mode = tk.BooleanVar(value=os.getenv("WAKE_WORD_MODE", "false").lower() == "true")
