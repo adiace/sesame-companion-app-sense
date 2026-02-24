@@ -631,7 +631,6 @@ class SesameCompanionApp:
     def process_input(self, user_input: str) -> tuple:
         """Process user input through AI and control robot"""
         interpretation = self.ai.interpret_command(user_input)
-        print(interpretation)
         
         # Conversational response (face only, no command)
         if "response" in interpretation and not interpretation.get("command"):
