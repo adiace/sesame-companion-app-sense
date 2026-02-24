@@ -22,11 +22,12 @@ Option 1 - Environment variables:
 
 ```powershell
 $env:SESAME_LOCAL=true
+# To test without Sesame you can set SESAME_ROBOT_IP to 'mock'
 $env:SESAME_ROBOT_IP="192.168.1.100"
 $env:GEMINI_API_KEY="your_key_here"
 # Use localhost if hosted LLM is on same PC, or IP (e.g. 192.168.1.50) if on a different server
 $env:LOCAL_LLM_URL="http://localhost:11434/v1"
-$env:LOCAL_LLM_MODEL="llama3"
+$env:LOCAL_LLM_MODEL="granite4"
 ```
 
 Option 2 - `.env` file:
@@ -41,7 +42,7 @@ WAKE_WORD=hey sesame
 WAKE_WORD_MODE=false
 # Use localhost if AI is on same PC, or IP (e.g. 192.168.1.50) if on a different server
 LOCAL_LLM_URL="http://localhost:11434/v1"
-LOCAL_LLM_MODEL="llama3"
+LOCAL_LLM_MODEL="granite4"
 ```
 
 ## Usage
