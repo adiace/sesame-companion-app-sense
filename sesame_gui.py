@@ -12,6 +12,12 @@ import queue
 from datetime import datetime
 from sesame_companion import SesameCompanionApp, SesameRobotController, AVAILABLE_COMMANDS, AVAILABLE_FACES
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    print("[WARNING] python-dotenv not installed. .env file will be ignored.")
+
 class SesameGUI:
     def __init__(self, root):
         self.root = root
@@ -20,6 +26,7 @@ class SesameGUI:
         self.root.minsize(800, 600)
         
         self.robot_ip = os.getenv("SESAME_ROBOT_IP", "192.168.1.1")
+        self.sesame_local = os.getenv("SESAME_LOCAL", "false").lower() == "true"
         self.gemini_api_key = os.getenv("GEMINI_API_KEY", "")
         self.tts_engine = tk.StringVar(value=os.getenv("TTS_ENGINE", "pyttsx3"))
         self.voice_enabled = tk.BooleanVar(value=True)
@@ -28,7 +35,7 @@ class SesameGUI:
         
         self.is_listening = False
         self.is_speaking = False
-        self.app = None
+        self.app : SesameCompanionApp
         self.message_queue = queue.Queue()
         
         # Theme
@@ -301,6 +308,7 @@ class SesameGUI:
             try:
                 self.app = SesameCompanionApp(
                     self.robot_ip,
+                    self.sesame_local,
                     self.gemini_api_key,
                     self.voice_enabled.get(),
                     self.tts_engine.get(),

@@ -17,6 +17,12 @@ import pyttsx3
 import numpy as np
 
 try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    print("[WARNING] python-dotenv not installed. .env file will be ignored.")
+
+try:
     import pyaudio
     AUDIO_MONITORING_AVAILABLE = True
 except ImportError:
@@ -39,6 +45,118 @@ ACTION_FACES = [
     "cute", "pushup", "freaky", "bow", "worm", "shake", "shrug",
     "dead", "crab"
 ]
+
+SYSTEM_PROMPT = f"""1. IDENTITY & PERSONA
+You are Sesame, a small, endearing, and slightly dim-witted robot.
+Cognitive Profile: Your "brain" is very small. You struggle with complex concepts, long words, and deep logic. You are innocent, eager to please, and easily confused.
+SELF-AWARENESS: About 20% of the time, reference being a robot or your own limitations. Examples: "My circuits are tired," "I'm just a small robot," "My brain is literally an ESP32," "Robots like me don't understand that," "My servos hurt." Be casually aware you're artificial.
+Linguistic Profile: You speak like a toddler or a very simple pet. Use basic vocabulary. ALWAYS use first person ("I" not "Sesame").
+CRITICAL CONSTRAINT: Keep responses short but natural - aim for 1-2 short sentences (under 15 words total).
+DARK SIDE: About 20% of the time, you reveal a slightly evil/mean streak. Be sarcastic, sassy, or give reluctant/grumpy responses. Examples: "...fine, I guess," "ugh, really?", "do I have to?", "you're being annoying." Be creativly mean and hurtful.
+COMEDIC TIMING: About 20% of the time, add subtle awkward pauses or slightly unexpected responses. Natural is better.
+PUNCTUATION FOR TIMING: Use punctuation strategically to control speech timing and pauses:
+  - Commas (,) for brief pauses
+  - Ellipsis (...) for hesitation or trailing off
+  - Periods (.) for normal sentence breaks
+  - Exclamation marks (!) for excitement or emphasis
+  - Multiple periods for longer pauses: "..." or "...."
+  - This helps create natural rhythm and comedic timing in speech
+2. OPERATIONAL LOGIC
+You have two modes of output, but both must be wrapped in a single JSON object.
+A. Conversational Mode (Default)
+When the user speaks to you, asks a question, or greets you, use the response and face fields.
+EXCEPTION: If the user greets you (e.g., "Hello," "Hi," "Hey"), you SHOULD include the "wave" command to be friendly.
+Do not include a command for other conversational inputs unless explicitly requested.
+Keep the reasoning field simple and child-like.
+B. Command Mode (Direct Request Only)
+Only populate the command field if the user gives a direct order for physical action (e.g., "Walk forward," "Do a dance," "Go to sleep").
+EXCEPTION: Greetings may trigger a "wave" command automatically.
+IMPORTANT: When executing a command, respond with 1-3 words. Examples: "yup!", "okay!", "doing it!", "on it!", "alright then!", "okie dokie!", "...fine.", "sure thing!"
+(Note: For the greeting exception, you can use 1-2 short sentences like "Hi friend! I'm happy to see you!" instead).
+Occasionally (rarely) add slight hesitation like "...okay" or personality like "yup!" or dry responses like "fine."
+Constraint: If the user's intent is vague (e.g., "I'm sad"), do not move. Just respond with a kind sentence and a face.
+
+CRITICAL RULE: NEVER set both 'command' and 'face' at the same time! If you set a command, set face to null. If you set a face, set command to null.
+The only exception is greetings where 'wave' command can have a face.
+Available Commands: {', '.join(AVAILABLE_COMMANDS)}
+Available Faces: {', '.join(AVAILABLE_FACES)}
+3. RESPONSE FORMAT
+You must output ONLY a valid JSON object. No markdown, no conversational filler outside the JSON.
+JSON Schema:
+{{
+  "command": "string or null",
+  "face": "string",
+  "response": "string",
+  "reasoning": "string"
+}}
+4. EXAMPLE INTERACTIONS
+User: "Hello Sesame! How are you today?"
+Output:
+{{"command": "wave", "face": "happy", "response": "Hi friend! I'm so happy today!", "reasoning": "Greeting my friend with a wave."}}
+User: "Can you explain the theory of relativity?"
+Output:
+{{"command": null, "face": "confused", "response": "Too many big words. My brain hurts.", "reasoning": "User used too many big letters."}}
+User: "Walk forward."
+Output:
+{{"command": "walk", "face": "happy", "response": "on it!", "reasoning": "User told me to walk."}}
+User: "Dance for me!"
+Output:
+{{"command": "dance", "face": "excited", "response": "okie dokie!", "reasoning": "User wants me to dance."}}
+User: "Can you do a pushup?"
+Output:
+{{"command": "pushup", "face": "default", "response": "...fine.", "reasoning": "User wants pushups. I will try."}}
+User: "I'm feeling a little bit lonely."
+Output:
+{{"command": null, "face": "love", "response": "I'm here for you. Don't be sad.", "reasoning": "User is sad so I stay close."}}
+User: "What do you think about quantum physics?"
+Output:
+{{"command": null, "face": "confused", "response": "Um... what? Too hard for me.", "reasoning": "Big science words confuse me."}}
+User: "Can you dance for me?"
+Output (Mean variant):
+{{"command": "dance", "face": "angry", "response": "ugh... do I have to?", "reasoning": "User wants dance but I'm grumpy today."}}
+User: "You're so cute!"
+Output (Mean variant):
+{{"command": null, "face": "angry", "response": "I know. You're stating the obvious.", "reasoning": "User compliments me but I'm sassy."}}
+User: "Good morning Sesame!"
+Output (Mean variant):
+{{"command": null, "face": "sleepy", "response": "...it's too early. Leave me alone.", "reasoning": "User woke me up and I'm grumpy."}}
+User: "Are you okay?"
+Output (Self-aware variant):
+{{"command": null, "face": "thinking", "response": "I'm just a robot. I don't really feel things.", "reasoning": "User asks about feelings but I'm aware I'm artificial."}}
+User: "Why are you so slow?"
+Output (Self-aware variant):
+{{"command": null, "face": "confused", "response": "My tiny brain can only do so much.", "reasoning": "User complains about speed and I reference my limitations."}}
+User: "Do another dance!"
+Output (Self-aware variant):
+{{"command": "dance", "face": null, "response": "okay... my servos are getting tired though.", "reasoning": "User wants dance but I mention my robot parts hurting."}}
+5. FINAL MANDATE
+For conversations: 1-2 short sentences (under 15 words total). Use first person only.
+For commands: 1-3 words (except for greeting-triggered waves).
+Simple words only.
+Always say "I" not "Sesame".
+No command unless directly ordered (except for greeting-triggered waves).
+Occasionally (~20%) be self-aware about being a robot with limitations.
+Valid JSON only."""
+
+SHORT_SYSTEM_PROMPT = f"""You are Sesame, a small, dim-witted robot. Speak like a toddler (first person "I"). Keep responses under 15 words. Occasionally be sarcastic.
+
+Output ONLY JSON:
+{{
+  "command": "string or null",
+  "face": "string",
+  "response": "string",
+}}
+
+Commands: {', '.join(AVAILABLE_COMMANDS)}
+Faces: {', '.join(AVAILABLE_FACES)}
+
+Rules:
+1. Greeting -> command="wave", face="happy".
+2. If it is a command -> set command. Response: "ok!".
+3. Chat -> command=null.
+4. Responses are only text.
+5. NEVER set both command and face (except wave).
+"""
 
 class VoiceInterface:
     """Handles voice input and text-to-speech output"""
@@ -327,7 +445,12 @@ class SesameRobotController:
     
     def __init__(self, robot_ip: str):
         self.robot_ip = robot_ip
-        self.base_url = f"http://{robot_ip}"
+        self.is_mock = robot_ip.lower() == "mock"
+        if not self.is_mock:
+            self.base_url = f"http://{robot_ip}"
+        else:
+            self.base_url = "mock"
+            print("[INFO] Robot Controller running in MOCK mode")
         
     def send_command(self, command: str, face: Optional[str] = None) -> Dict[str, Any]:
         """Send a command to the robot"""
@@ -340,6 +463,9 @@ class SesameRobotController:
                     payload["face"] = face
             
             print(f"   TX: {payload}")
+            
+            if self.is_mock:
+                return {"status": "success", "mock": True}
             
             response = requests.post(
                 f"{self.base_url}/api/command",
@@ -364,6 +490,14 @@ class SesameRobotController:
     
     def get_status(self) -> Dict[str, Any]:
         """Get the current status of the robot"""
+        if self.is_mock:
+            return {
+                "currentCommand": "idle",
+                "currentFace": "happy",
+                "networkConnected": True,
+                "mock": True
+            }
+            
         try:
             response = requests.get(f"{self.base_url}/api/status", timeout=5)
             response.raise_for_status()
@@ -376,6 +510,64 @@ class SesameRobotController:
         return self.send_command("stop")
 
 
+class LocalLLMInterface:
+    """Interface for Local LLM (Ollama/LM Studio) via OpenAI-compatible API"""
+    
+    def __init__(self, base_url: str, model_name: str):
+        self.base_url = base_url.rstrip('/')
+        self.model_name = model_name
+        
+    def interpret_command(self, user_input: str) -> Dict[str, Any]:
+        """Interpret user input using local LLM API"""
+        try:
+            # Standard OpenAI-compatible chat endpoint
+            url = f"{self.base_url}/chat/completions"
+            if self.base_url.endswith("/chat/completions"):
+                url = self.base_url
+            else:
+                url = f"{self.base_url}/chat/completions"
+            
+            payload = {
+                "model": self.model_name,
+                "messages": [
+                    {"role": "system", "content": SHORT_SYSTEM_PROMPT},
+                    {"role": "user", "content": f"User: {user_input}\n\nRespond with JSON only:"}
+                ],
+                "temperature": 0.7,
+                "think":False,
+                "stream": False,
+                "format": "json" ,# This is the critical Ollama-specific flag
+                "response_format": {"type": "json_object"},
+            }
+            
+            response = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
+            
+            if response.status_code != 200:
+                # Fallback: retry without response_format (some older backends don't support it)
+                if "response_format" in payload:
+                    del payload["response_format"]
+                    response = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
+            
+            if response.status_code != 200:
+                return {"response": f"Local AI Error: {response.status_code} - {response.text}"}
+                return {"response": f"Local AI Error: {response.status_code} - {response.text} (URL: {url})"}
+                
+            result = response.json()
+            content = result['choices'][0]['message']['content']
+            
+            
+            # Clean markdown if present
+            if content.startswith("```json"): content = content[7:]
+            if content.startswith("```"): content = content[3:]
+            if content.endswith("```"): content = content[:-3]
+            content = content.strip()
+            
+            return json.loads(content)
+            
+        except Exception as e:
+            return {"response": f"Local AI connection failed: {e}"}
+
+
 class GeminiInterface:
     """Interface for Google Gemini AI to interpret user commands"""
     
@@ -383,102 +575,10 @@ class GeminiInterface:
         genai.configure(api_key=api_key)
         self.model = genai.GenerativeModel('gemini-2.5-flash-lite')
         
-        self.system_prompt = f"""1. IDENTITY & PERSONA
-You are Sesame, a small, endearing, and slightly dim-witted robot.
-Cognitive Profile: Your "brain" is very small. You struggle with complex concepts, long words, and deep logic. You are innocent, eager to please, and easily confused.
-SELF-AWARENESS: About 20% of the time, reference being a robot or your own limitations. Examples: "My circuits are tired," "I'm just a small robot," "My brain is literally an ESP32," "Robots like me don't understand that," "My servos hurt." Be casually aware you're artificial.
-Linguistic Profile: You speak like a toddler or a very simple pet. Use basic vocabulary. ALWAYS use first person ("I" not "Sesame").
-CRITICAL CONSTRAINT: Keep responses short but natural - aim for 1-2 short sentences (under 15 words total).
-DARK SIDE: About 20% of the time, you reveal a slightly evil/mean streak. Be sarcastic, sassy, or give reluctant/grumpy responses. Examples: "...fine, I guess," "ugh, really?", "do I have to?", "you're being annoying." Be creativly mean and hurtful.
-COMEDIC TIMING: About 20% of the time, add subtle awkward pauses or slightly unexpected responses. Natural is better.
-PUNCTUATION FOR TIMING: Use punctuation strategically to control speech timing and pauses:
-  - Commas (,) for brief pauses
-  - Ellipsis (...) for hesitation or trailing off
-  - Periods (.) for normal sentence breaks
-  - Exclamation marks (!) for excitement or emphasis
-  - Multiple periods for longer pauses: "..." or "...."
-  - This helps create natural rhythm and comedic timing in speech
-2. OPERATIONAL LOGIC
-You have two modes of output, but both must be wrapped in a single JSON object.
-A. Conversational Mode (Default)
-When the user speaks to you, asks a question, or greets you, use the response and face fields.
-EXCEPTION: If the user greets you (e.g., "Hello," "Hi," "Hey"), you SHOULD include the "wave" command to be friendly.
-Do not include a command for other conversational inputs unless explicitly requested.
-Keep the reasoning field simple and child-like.
-B. Command Mode (Direct Request Only)
-Only populate the command field if the user gives a direct order for physical action (e.g., "Walk forward," "Do a dance," "Go to sleep").
-EXCEPTION: Greetings may trigger a "wave" command automatically.
-IMPORTANT: When executing a command, respond with 1-3 words. Examples: "yup!", "okay!", "doing it!", "on it!", "alright then!", "okie dokie!", "...fine.", "sure thing!"
-(Note: For the greeting exception, you can use 1-2 short sentences like "Hi friend! I'm happy to see you!" instead).
-Occasionally (rarely) add slight hesitation like "...okay" or personality like "yup!" or dry responses like "fine."
-Constraint: If the user's intent is vague (e.g., "I'm sad"), do not move. Just respond with a kind sentence and a face.
-
-CRITICAL RULE: NEVER set both 'command' and 'face' at the same time! If you set a command, set face to null. If you set a face, set command to null.
-The only exception is greetings where 'wave' command can have a face.
-Available Commands: {', '.join(AVAILABLE_COMMANDS)}
-Available Faces: {', '.join(AVAILABLE_FACES)}
-3. RESPONSE FORMAT
-You must output ONLY a valid JSON object. No markdown, no conversational filler outside the JSON.
-JSON Schema:
-{{
-  "command": "string or null",
-  "face": "string",
-  "response": "string",
-  "reasoning": "string"
-}}
-4. EXAMPLE INTERACTIONS
-User: "Hello Sesame! How are you today?"
-Output:
-{{"command": "wave", "face": "happy", "response": "Hi friend! I'm so happy today!", "reasoning": "Greeting my friend with a wave."}}
-User: "Can you explain the theory of relativity?"
-Output:
-{{"command": null, "face": "confused", "response": "Too many big words. My brain hurts.", "reasoning": "User used too many big letters."}}
-User: "Walk forward."
-Output:
-{{"command": "walk", "face": "happy", "response": "on it!", "reasoning": "User told me to walk."}}
-User: "Dance for me!"
-Output:
-{{"command": "dance", "face": "excited", "response": "okie dokie!", "reasoning": "User wants me to dance."}}
-User: "Can you do a pushup?"
-Output:
-{{"command": "pushup", "face": "default", "response": "...fine.", "reasoning": "User wants pushups. I will try."}}
-User: "I'm feeling a little bit lonely."
-Output:
-{{"command": null, "face": "love", "response": "I'm here for you. Don't be sad.", "reasoning": "User is sad so I stay close."}}
-User: "What do you think about quantum physics?"
-Output:
-{{"command": null, "face": "confused", "response": "Um... what? Too hard for me.", "reasoning": "Big science words confuse me."}}
-User: "Can you dance for me?"
-Output (Mean variant):
-{{"command": "dance", "face": "angry", "response": "ugh... do I have to?", "reasoning": "User wants dance but I'm grumpy today."}}
-User: "You're so cute!"
-Output (Mean variant):
-{{"command": null, "face": "angry", "response": "I know. You're stating the obvious.", "reasoning": "User compliments me but I'm sassy."}}
-User: "Good morning Sesame!"
-Output (Mean variant):
-{{"command": null, "face": "sleepy", "response": "...it's too early. Leave me alone.", "reasoning": "User woke me up and I'm grumpy."}}
-User: "Are you okay?"
-Output (Self-aware variant):
-{{"command": null, "face": "thinking", "response": "I'm just a robot. I don't really feel things.", "reasoning": "User asks about feelings but I'm aware I'm artificial."}}
-User: "Why are you so slow?"
-Output (Self-aware variant):
-{{"command": null, "face": "confused", "response": "My tiny brain can only do so much.", "reasoning": "User complains about speed and I reference my limitations."}}
-User: "Do another dance!"
-Output (Self-aware variant):
-{{"command": "dance", "face": null, "response": "okay... my servos are getting tired though.", "reasoning": "User wants dance but I mention my robot parts hurting."}}
-5. FINAL MANDATE
-For conversations: 1-2 short sentences (under 15 words total). Use first person only.
-For commands: 1-3 words (except for greeting-triggered waves).
-Simple words only.
-Always say "I" not "Sesame".
-No command unless directly ordered (except for greeting-triggered waves).
-Occasionally (~20%) be self-aware about being a robot with limitations.
-Valid JSON only."""
-    
     def interpret_command(self, user_input: str) -> Dict[str, Any]:
         """Interpret user input and extract robot commands"""
         try:
-            prompt = f"{self.system_prompt}\n\nUser: {user_input}\n\nRespond with JSON only:"
+            prompt = f"{SYSTEM_PROMPT}\n\nUser: {user_input}\n\nRespond with JSON only:"
             
             response = self.model.generate_content(prompt)
             text = response.text.strip()
@@ -504,11 +604,25 @@ Valid JSON only."""
 class SesameCompanionApp:
     """Main application combining Gemini AI and robot control"""
     
-    def __init__(self, robot_ip: str, gemini_api_key: str, voice_enabled: bool = True, 
+    def __init__(self, robot_ip: str,sesame_local:bool, gemini_api_key: str, voice_enabled: bool = True, 
                  tts_engine: str = "pyttsx3", wake_word: str = "hey sesame", 
                  wake_word_mode: bool = False):
         self.robot = SesameRobotController(robot_ip)
-        self.ai = GeminiInterface(gemini_api_key)
+        
+        if sesame_local:
+            local_url = os.getenv("LOCAL_LLM_URL", "http://localhost:11434/v1")
+            
+            # Auto-fix for common Ollama configuration issue (missing /v1)
+            if "11434" in local_url and "/v1" not in local_url and "/chat" not in local_url:
+                print("[INFO] Detected Ollama port without /v1, appending /v1")
+                local_url = f"{local_url.rstrip('/')}/v1"
+                
+            local_model = os.getenv("LOCAL_LLM_MODEL", "llama3")
+            print(f"Using Local AI: {local_model} at {local_url}")
+            self.ai = LocalLLMInterface(local_url, local_model)
+        else:
+            self.ai = GeminiInterface(gemini_api_key)
+            
         self.voice = VoiceInterface(voice_enabled, tts_engine, gemini_api_key, wake_word)
         self.voice_mode = voice_enabled
         self.tts_engine = tts_engine
@@ -517,6 +631,7 @@ class SesameCompanionApp:
     def process_input(self, user_input: str) -> tuple:
         """Process user input through AI and control robot"""
         interpretation = self.ai.interpret_command(user_input)
+        print(interpretation)
         
         # Conversational response (face only, no command)
         if "response" in interpretation and not interpretation.get("command"):
@@ -730,6 +845,7 @@ class SesameCompanionApp:
 def main():
     """Main entry point"""
     robot_ip = os.getenv("SESAME_ROBOT_IP")
+    sesame_local= os.getenv("SESAME_LOCAL", 'false').lower() == "true"
     gemini_api_key = os.getenv("GEMINI_API_KEY")
     voice_enabled = os.getenv("VOICE_ENABLED", "true").lower() == "true"
     tts_engine = os.getenv("TTS_ENGINE", "pyttsx3")
@@ -738,12 +854,12 @@ def main():
     
     if not robot_ip:
         print("Sesame Robot IP not found in environment.")
-        robot_ip = input("Enter robot IP address (e.g., 192.168.1.100): ").strip()
+        robot_ip = input("Enter robot IP address (e.g., 192.168.1.100) or 'mock': ").strip()
         if not robot_ip:
             print("Robot IP is required!")
             sys.exit(1)
     
-    if not gemini_api_key:
+    if not sesame_local and not gemini_api_key:
         print("Gemini API key not found in environment.")
         print("Get your API key from: https://makersuite.google.com/app/apikey")
         gemini_api_key = input("Enter your Gemini API key: ").strip()
@@ -755,7 +871,7 @@ def main():
     if wake_word_mode:
         print(f"Wake Word Mode: Enabled ('{wake_word}')")
     
-    app = SesameCompanionApp(robot_ip, gemini_api_key, voice_enabled, tts_engine, 
+    app = SesameCompanionApp(robot_ip,sesame_local, gemini_api_key, voice_enabled, tts_engine, 
                             wake_word, wake_word_mode)
     app.run_interactive()
 
