@@ -152,7 +152,7 @@ Faces: {', '.join(AVAILABLE_FACES)}
 
 Rules:
 1. Greeting -> command="wave", face="happy".
-2. If it is a command -> set command. Response: "ok!".
+2. If it is a command -> set command.
 3. Chat -> command=null.
 4. Responses are only text.
 5. NEVER set both command and face (except wave).
