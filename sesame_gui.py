@@ -10,7 +10,8 @@ import tkinter as tk
 from tkinter import ttk, scrolledtext
 import queue
 from datetime import datetime
-from sesame_companion import SesameCompanionApp, SesameRobotController, AVAILABLE_COMMANDS, AVAILABLE_FACES
+from sesame_companion import (SesameCompanionApp, SesameRobotController,
+                              AVAILABLE_COMMANDS, AVAILABLE_FACES)
 
 try:
     from dotenv import load_dotenv
@@ -35,7 +36,7 @@ class SesameGUI:
         
         self.is_listening = False
         self.is_speaking = False
-        self.app : SesameCompanionApp
+        self.app: SesameCompanionApp = None   # set by init_app thread; guard all access
         self.message_queue = queue.Queue()
         
         # Theme
@@ -46,9 +47,32 @@ class SesameGUI:
         self.success_color = "#4caf50"
         self.error_color = "#f44336"
         
+        self.btn_bg      = "#444444"
+        self.btn_hover   = "#ff8c42"
+        self.btn_fg      = "#ffffff"
+
         self.setup_ui()
         self.start_backend()
         self.process_queue()
+
+    def _make_btn(self, parent, text, command, bg=None, fg=None,
+                  font=("Segoe UI", 11, "bold"), padx=12, pady=8, fill=False):
+        """macOS-safe button: tk.Label with click + hover bindings."""
+        bg  = bg  or self.btn_bg
+        fg  = fg  or self.btn_fg
+        frm = tk.Frame(parent, bg=bg, cursor="hand2")
+        lbl = tk.Label(frm, text=text, bg=bg, fg=fg, font=font,
+                       padx=padx, pady=pady, cursor="hand2")
+        lbl.pack(fill=tk.BOTH, expand=True)
+        hover = self.btn_hover
+        def _enter(e): lbl.config(bg=hover); frm.config(bg=hover)
+        def _leave(e): lbl.config(bg=bg);    frm.config(bg=bg)
+        def _click(e): command()
+        for w in (frm, lbl):
+            w.bind("<Enter>",    _enter)
+            w.bind("<Leave>",    _leave)
+            w.bind("<Button-1>", _click)
+        return frm
         
     def setup_ui(self):
         """Setup the user interface"""
@@ -104,44 +128,24 @@ class SesameGUI:
             ("Wave", "wave"),
             ("Dance", "dance"),
             ("Walk", "walk"),
+            ("Stand", "stand"),
             ("Rest", "rest"),
             ("Pushup", "pushup"),
             ("Crab Walk", "crab"),
+            ("Box", "box"),
             ("Swim", "swim"),
             ("Bow", "bow"),
             ("Stop", "stop"),
         ]
         
         for text, command in commands:
-            btn = tk.Button(
-                parent,
-                text=text,
-                command=lambda cmd=command: self.send_quick_command(cmd),
-                bg=self.secondary_bg,
-                fg=self.text_color,
-                activebackground=self.accent_color,
-                font=("Segoe UI", 10),
-                relief=tk.FLAT,
-                padx=10,
-                pady=8,
-                cursor="hand2"
-            )
+            btn = self._make_btn(parent, text, lambda cmd=command: self.send_quick_command(cmd))
             btn.pack(fill=tk.X, pady=2)
             
         ttk.Separator(parent, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=10)
         
-        refresh_btn = tk.Button(
-            parent,
-            text="Refresh Status",
-            command=self.refresh_status,
-            bg=self.secondary_bg,
-            fg=self.text_color,
-            activebackground=self.accent_color,
-            font=("Segoe UI", 9),
-            relief=tk.FLAT,
-            padx=10,
-            pady=5
-        )
+        refresh_btn = self._make_btn(parent, "Refresh Status", self.refresh_status,
+                                     font=("Segoe UI", 9, "bold"), pady=5)
         refresh_btn.pack(fill=tk.X)
         
     def create_chat_area(self, parent):
@@ -185,32 +189,15 @@ class SesameGUI:
         self.input_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=8, padx=(0, 5))
         self.input_entry.bind("<Return>", lambda e: self.send_message())
         
-        self.mic_button = tk.Button(
-            input_frame,
-            text="MIC",
-            command=self.toggle_listening,
-            bg=self.accent_color,
-            fg="white",
-            activebackground=self.accent_color,
-            font=("Segoe UI", 10, "bold"),
-            relief=tk.FLAT,
-            width=4,
-            cursor="hand2"
-        )
+        self.mic_button = self._make_btn(input_frame, "MIC", self.toggle_listening,
+                                         bg=self.accent_color, font=("Segoe UI", 10, "bold"),
+                                         padx=8, pady=4)
+        self.mic_button._label = self.mic_button.winfo_children()[0]
         self.mic_button.pack(side=tk.LEFT, padx=(0, 5))
         
-        send_button = tk.Button(
-            input_frame,
-            text="Send",
-            command=self.send_message,
-            bg=self.accent_color,
-            fg="white",
-            activebackground=self.accent_color,
-            font=("Segoe UI", 10, "bold"),
-            relief=tk.FLAT,
-            padx=15,
-            cursor="hand2"
-        )
+        send_button = self._make_btn(input_frame, "Send", self.send_message,
+                                     bg=self.accent_color, font=("Segoe UI", 10, "bold"),
+                                     padx=15, pady=4)
         send_button.pack(side=tk.LEFT)
         
     def create_settings_panel(self, parent):
@@ -315,11 +302,26 @@ class SesameGUI:
                     self.wake_word,
                     self.wake_word_mode.get()
                 )
+
+                # Wire robot voice receiver → GUI chat
+                def _on_robot_voice(user_text, result):
+                    self.message_queue.put(("robot_voice_user", user_text))
+                    response = (result.get("response") or "").strip()
+                    command  = result.get("command")
+                    if not response and command:
+                        response = f"*{command}*"
+                    if response:
+                        self.message_queue.put(("robot_voice_sesame", response))
+
+                self.app.robot_voice.on_interaction = _on_robot_voice
+                self.app.start_robot_voice_receiver()
+
                 self.message_queue.put(("system", "[OK] Backend initialized"))
+                self.message_queue.put(("system", "[OK] Robot voice receiver active (port 8889)"))
                 self.check_connection()
             except Exception as e:
                 self.message_queue.put(("error", f"Failed to initialize: {e}"))
-        
+
         thread = threading.Thread(target=init_app, daemon=True)
         thread.start()
         
@@ -343,19 +345,35 @@ class SesameGUI:
         thread.start()
         
     def send_message(self):
-        """Send a text message"""
+        """Send a text message. Prefix with / to bypass LLM and send raw to robot."""
         message = self.input_entry.get().strip()
         if not message:
             return
-            
+        if not self.app:
+            self.add_message("error", "Not ready yet — backend still initializing")
+            return
+
         self.input_entry.delete(0, tk.END)
+
+        if message.startswith("/"):
+            raw_cmd = message[1:].strip()
+            self.add_message("system", f"→ {raw_cmd}")
+            def send_raw():
+                try:
+                    self.app.robot._tcp_send(raw_cmd)
+                    self.message_queue.put(("success", f"[OK] sent: {raw_cmd}"))
+                except Exception as e:
+                    self.message_queue.put(("error", f"Send failed: {e}"))
+            threading.Thread(target=send_raw, daemon=True).start()
+            return
+
         self.add_message("user", message)
-        
+
         def process():
             try:
                 response, interpretation = self.app.process_input(message)
                 self.message_queue.put(("sesame", interpretation.get("response", response)))
-                
+
                 if self.voice_enabled.get() and "response" in interpretation:
                     face = interpretation.get("face") if not interpretation.get("command") else None
                     self.app.voice.speak(
@@ -366,31 +384,40 @@ class SesameGUI:
                     )
             except Exception as e:
                 self.message_queue.put(("error", f"Error: {e}"))
-        
+
         thread = threading.Thread(target=process, daemon=True)
         thread.start()
         
     def toggle_listening(self):
-        """Toggle voice listening"""
+        """Toggle voice listening. Click once to start, click again to cancel."""
         if not self.voice_enabled.get():
             self.add_message("system", "Voice mode is disabled. Enable it in settings.")
             return
-        
+
         if self.wake_word_mode.get():
             self.add_message("system", f"Wake word mode is active. Say '{self.wake_word}' to trigger listening.")
             return
-            
+
         if self.is_listening:
+            self._listen_cancel.set()
             return
-            
+
+        if not self.app:
+            self.add_message("error", "Not ready yet — backend still initializing")
+            return
+
+        self._listen_cancel = threading.Event()
         self.is_listening = True
-        self.mic_button.config(bg=self.error_color, text="STOP")
-        self.add_message("system", "Listening...")
-        
+        self.mic_button.config(bg=self.error_color)
+        self.mic_button._label.config(bg=self.error_color, text="STOP")
+        self.add_message("system", "Listening... (speak now, or click STOP)")
+
         def listen():
             try:
-                text = self.app.voice.listen()
-                if text:
+                text = self.app.voice.listen(cancel_event=self._listen_cancel)
+                if self._listen_cancel.is_set():
+                    self.message_queue.put(("system", "Listening cancelled"))
+                elif text:
                     self.message_queue.put(("voice_input", text))
                 else:
                     self.message_queue.put(("system", "No speech detected"))
@@ -398,14 +425,17 @@ class SesameGUI:
                 self.message_queue.put(("error", f"Voice error: {e}"))
             finally:
                 self.message_queue.put(("listening_done", None))
-        
+
         thread = threading.Thread(target=listen, daemon=True)
         thread.start()
         
     def send_quick_command(self, command):
         """Send a quick command"""
+        if not self.app:
+            self.add_message("error", "Not ready yet — backend still initializing")
+            return
         self.add_message("system", f"Executing: {command}")
-        
+
         def execute():
             try:
                 result = self.app.robot.send_command(command)
@@ -503,7 +533,11 @@ class SesameGUI:
             while True:
                 msg_type, data = self.message_queue.get_nowait()
                 
-                if msg_type in ["user", "sesame", "system", "error", "success"]:
+                if msg_type == "robot_voice_user":
+                    self.add_message("user", f"[ROBOT MIC] {data}")
+                elif msg_type == "robot_voice_sesame":
+                    self.add_message("sesame", data)
+                elif msg_type in ["user", "sesame", "system", "error", "success"]:
                     self.add_message(msg_type, data)
                 elif msg_type == "connection":
                     if data:
@@ -520,7 +554,8 @@ class SesameGUI:
                     self.send_message()
                 elif msg_type == "listening_done":
                     self.is_listening = False
-                    self.mic_button.config(bg=self.accent_color, text="MIC")
+                    self.mic_button.config(bg=self.accent_color)
+                    self.mic_button._label.config(bg=self.accent_color, text="MIC")
                     
         except queue.Empty:
             pass

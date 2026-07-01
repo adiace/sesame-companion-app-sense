@@ -1,0 +1,110 @@
+{
+  "_comment": "Voice-triggered actions for the quadruped. Each entry: name, trigger phrases (any match fires it), and steps. A step is either {\"cmd\": \"<firmware command>\"} or {\"wait\": <seconds>}. Continuous gaits (forward/left/etc.) run until 'stop'. See docs/commands.md for the full command vocabulary.",
+  "actions": [
+    { "name": "stop",     "priority": true,
+      "triggers": ["stop", "halt", "freeze", "stay", "wait"],
+      "steps": [{ "cmd": "stop" }] },
+
+    { "name": "stand",
+      "triggers": ["stand", "stand up", "get up", "up"],
+      "steps": [{ "cmd": "stand" }] },
+
+    { "name": "rest",
+      "triggers": ["rest", "sit", "sit down", "lie down", "relax", "down"],
+      "steps": [{ "cmd": "rest" }] },
+
+    { "name": "forward",
+      "triggers": ["forward", "go forward", "walk forward", "walk", "go", "come here"],
+      "steps": [{ "cmd": "forward" }] },
+
+    { "name": "backward",
+      "triggers": ["back", "backward", "go back", "reverse", "back up"],
+      "steps": [{ "cmd": "backward" }] },
+
+    { "name": "left",
+      "triggers": ["left", "turn left", "go left"],
+      "steps": [{ "cmd": "left" }] },
+
+    { "name": "right",
+      "triggers": ["right", "turn right", "go right"],
+      "steps": [{ "cmd": "right" }] },
+
+    { "name": "wave",
+      "triggers": ["wave", "say hi", "say hello", "hello", "hi"],
+      "steps": [{ "cmd": "wave" }] },
+
+    { "name": "dance",
+      "triggers": ["dance", "boogie"],
+      "steps": [{ "cmd": "dance" }] },
+
+    { "name": "bow",
+      "triggers": ["bow", "take a bow"],
+      "steps": [{ "cmd": "bow" }] },
+
+    { "name": "pushup",
+      "triggers": ["pushup", "push up", "push ups", "exercise", "work out"],
+      "steps": [{ "cmd": "pushup" }] },
+
+    { "name": "circle",
+      "triggers": ["circle", "walk in a circle", "go in a circle", "circle left"],
+      "steps": [
+        { "cmd": "left" },
+        { "wait": 7 },
+        { "cmd": "stop" }
+      ] },
+
+    { "name": "circle right",
+      "triggers": ["circle right", "other circle", "circle the other way"],
+      "steps": [
+        { "cmd": "right" },
+        { "wait": 7 },
+        { "cmd": "stop" }
+      ] },
+
+    { "name": "figure eight",
+      "triggers": ["figure eight", "figure of eight", "figure 8", "eight"],
+      "steps": [
+        { "cmd": "left" },  { "wait": 4 },
+        { "cmd": "right" }, { "wait": 4 },
+        { "cmd": "stop" }
+      ] },
+
+    { "name": "spin",
+      "triggers": ["spin", "spin around", "twirl", "spin left"],
+      "steps": [
+        { "cmd": "left" },
+        { "wait": 3 },
+        { "cmd": "stop" }
+      ] },
+
+    { "name": "spin right",
+      "triggers": ["spin right", "twirl right"],
+      "steps": [
+        { "cmd": "right" },
+        { "wait": 3 },
+        { "cmd": "stop" }
+      ] },
+
+    { "name": "wiggle",
+      "triggers": ["wiggle", "wiggle it", "shake it"],
+      "steps": [
+        { "cmd": "hips 110" }, { "wait": 0.2 },
+        { "cmd": "hips 70"  }, { "wait": 0.2 },
+        { "cmd": "hips 110" }, { "wait": 0.2 },
+        { "cmd": "hips 70"  }, { "wait": 0.2 },
+        { "cmd": "hips 110" }, { "wait": 0.2 },
+        { "cmd": "hips 70"  }, { "wait": 0.2 },
+        { "cmd": "stand" }
+      ] },
+
+    { "name": "wander",
+      "triggers": ["wander", "explore", "walk around", "roam"],
+      "steps": [
+        { "cmd": "forward" }, { "wait": 2 },
+        { "cmd": "left" },    { "wait": 2 },
+        { "cmd": "forward" }, { "wait": 2 },
+        { "cmd": "right" },   { "wait": 2 },
+        { "cmd": "stop" }
+      ] }
+  ]
+}

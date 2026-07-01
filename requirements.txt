@@ -1,9 +1,18 @@
-google-generativeai>=0.3.0
-google-genai>=0.1.0
+# Core
 requests>=2.31.0
-SpeechRecognition>=3.10.0
-pyttsx3>=2.90
-PyAudio>=0.2.13
-pygame>=2.5.0
 numpy>=1.24.0
-python-dotenv >=1.2.1
+python-dotenv>=1.2.1
+pyserial>=3.5          # robot_link.py serial transport fallback
+
+# STT (local, replaces Google Speech API)
+faster-whisper>=1.0.0
+SpeechRecognition>=3.10.0   # mic recording + VAD; transcription done by faster-whisper
+PyAudio>=0.2.13              # microphone input for SpeechRecognition
+
+# TTS (local)
+pyttsx3>=2.90
+
+# Optional: Gemini TTS (only if TTS_ENGINE=gemini + GEMINI_API_KEY set)
+# google-generativeai>=0.3.0
+# google-genai>=0.1.0
+# pygame>=2.5.0
