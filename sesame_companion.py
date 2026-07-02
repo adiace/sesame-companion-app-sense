@@ -691,7 +691,6 @@ class SesameMemory:
             "profile.json",
             {"name": None, "favorites": [], "top_commands": {}}
         )
-        self._last_summary: str = self._load_last_summary()
 
     def _load_json(self, fname: str, default: dict) -> dict:
         p = self.SESAME_DIR / fname
@@ -707,18 +706,6 @@ class SesameMemory:
             (self.SESAME_DIR / fname).write_text(json.dumps(data, indent=2))
         except Exception as e:
             print(f"[Memory] save {fname} failed: {e}")
-
-    def _load_last_summary(self) -> str:
-        p = self.SESAME_DIR / "sessions.jsonl"
-        if not p.exists():
-            return ""
-        try:
-            lines = [l for l in p.read_text().splitlines() if l.strip()]
-            if lines:
-                return json.loads(lines[-1]).get("summary", "")
-        except Exception:
-            pass
-        return ""
 
     def _normalize(self, text: str) -> str:
         return re.sub(r'[^\w\s]', '', text.lower()).strip()
@@ -773,18 +760,7 @@ class SesameMemory:
             parts.append(f"The child's name is {self._profile['name']}.")
         if self._profile.get("favorites"):
             parts.append(f"Their favorites: {', '.join(self._profile['favorites'][:3])}.")
-        if self._last_summary:
-            parts.append(f"Last time: {self._last_summary}")
         return " ".join(parts)
-
-    def save_session_summary(self, summary: str):
-        p = self.SESAME_DIR / "sessions.jsonl"
-        try:
-            with p.open("a") as f:
-                f.write(json.dumps({"summary": summary, "ts": time.time()}) + "\n")
-            self._last_summary = summary
-        except Exception as e:
-            print(f"[Memory] save summary failed: {e}")
 
 
 # ── LocalLLMInterface ──────────────────────────────────────────────────────────
@@ -801,30 +777,6 @@ class LocalLLMInterface:
 
     def clear_history(self):
         self._history = []
-
-    def summarize_session(self) -> str:
-        if not self._history:
-            return ""
-        try:
-            msgs = "\n".join(
-                f"{m['role'].upper()}: {m['content']}" for m in self._history[-8:]
-            )
-            url = f"{self.base_url}/chat/completions"
-            payload = {
-                "model": self.model_name,
-                "messages": [
-                    {"role": "system",
-                     "content": "Summarize this robot-child interaction in 1-2 short sentences. Focus on what the child did and enjoyed."},
-                    {"role": "user", "content": msgs}
-                ],
-                "temperature": 0.3,
-                "stream": False,
-            }
-            r = requests.post(url, json=payload,
-                              headers={"Content-Type": "application/json"}, timeout=20)
-            return r.json()['choices'][0]['message']['content'].strip()
-        except Exception:
-            return ""
 
     def interpret_command(self, user_input: str,
                           imu_context: str = "",
@@ -1161,15 +1113,8 @@ class SesameCompanionApp:
                 print("[Idle] 5 min idle — putting robot to sleep")
                 self.robot.send_command("sleep")
                 self._sleeping = True
-                # Save session summary on sleep
-                try:
-                    summary = self.ai.summarize_session() if hasattr(self.ai, 'summarize_session') else ""
-                    if summary:
-                        self.memory.save_session_summary(summary)
-                        print(f"[Memory] Session summary saved: {summary!r}")
-                    self.ai.clear_history() if hasattr(self.ai, 'clear_history') else None
-                except Exception as e:
-                    print(f"[Idle] Session summary failed: {e}")
+                if hasattr(self.ai, 'clear_history'):
+                    self.ai.clear_history()
             elif idle_secs >= self.IDLE_PHRASE_SECS and not self._idle_phrase_fired:
                 print("[Idle] 3 min idle — showing bored face")
                 self.robot.send_command("idle", "confused")
