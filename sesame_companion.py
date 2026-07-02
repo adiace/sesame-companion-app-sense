@@ -1159,7 +1159,6 @@ class SesameCompanionApp:
                 continue
             if idle_secs >= self.IDLE_SLEEP_SECS:
                 print("[Idle] 5 min idle — putting robot to sleep")
-                subprocess.Popen(['say', '-r', '180', 'Going to sleep now... zzz'])
                 self.robot.send_command("sleep")
                 self._sleeping = True
                 # Save session summary on sleep
@@ -1172,9 +1171,8 @@ class SesameCompanionApp:
                 except Exception as e:
                     print(f"[Idle] Session summary failed: {e}")
             elif idle_secs >= self.IDLE_PHRASE_SECS and not self._idle_phrase_fired:
-                phrase = random.choice(_IDLE_PHRASES)
-                print(f"[Idle] 3 min idle — saying: {phrase!r}")
-                subprocess.Popen(['say', '-r', '180', phrase])
+                print("[Idle] 3 min idle — showing bored face")
+                self.robot.send_command("idle", "confused")
                 self._idle_phrase_fired = True
 
     def process_input(self, user_input: str) -> tuple:
