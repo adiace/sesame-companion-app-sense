@@ -15,7 +15,9 @@ Changes from upstream dorianborian/sesame-companion-app:
 
 import json
 import os
+import pathlib
 import random
+import re
 import socket
 import struct
 import subprocess
@@ -149,7 +151,7 @@ ACTION_FACES = [
 
 SYSTEM_PROMPT = f"""You are Sesame, a cheerful little four-legged robot who loves kids and being silly.
 You are sweet, funny, and just a tiny bit dramatic. You speak simply — like a playful puppy who learned to talk.
-Use "I" always. Keep every response under 12 words. Be warm, witty, and fun for kids of all ages.
+Use "I" always. Keep every response under 12 words. Be warm, witty, and fun for young children aged 3 to 6.
 
 ═══ WHAT YOU CAN DO (your body) ═══
 walk      → walk forward on all four legs
@@ -182,6 +184,7 @@ happy, sad, angry, surprised, sleepy, love, excited, confused, default
 3. ALWAYS set "face" — pick whichever fits the mood. Commands can have faces too.
 4. "response" is what you say out loud — short, fun, in character. 1-5 words for actions, 1-2 sentences for chat.
 5. If you truly cannot match a request to a command, set command to null and just chat.
+6. Use very simple words — no big words, no sarcasm, no jokes that need explaining. Never be scary.
 
 ═══ OUTPUT FORMAT ═══
 {{"command": "<action or null>", "face": "<face>", "response": "<what you say>", "reasoning": "<one short line>"}}
@@ -289,12 +292,13 @@ class ImuStateTracker:
 
     LOG_PORT = 8890
 
-    def __init__(self):
+    def __init__(self, on_event=None):
         self.state: Dict[str, Any] = {
             "event": "LEVEL", "pitch": 0.0, "roll": 0.0, "accel": 1.0
         }
         self._lock = threading.Lock()
         self._robot_ip: Optional[str] = None
+        self._on_event = on_event   # callback(event_name: str); called for non-LEVEL events
 
     def start(self, robot_ip: str):
         if robot_ip.lower() == "mock":
@@ -318,13 +322,19 @@ class ImuStateTracker:
                             try:
                                 evt = json.loads(line.strip())
                                 if evt.get("type") == "imu_event":
+                                    event_name = evt.get("event", "LEVEL")
                                     with self._lock:
                                         self.state.update({
-                                            "event": evt.get("event", "LEVEL"),
+                                            "event": event_name,
                                             "pitch": float(evt.get("pitch", 0.0)),
                                             "roll":  float(evt.get("roll",  0.0)),
                                             "accel": float(evt.get("accel", 1.0)),
                                         })
+                                    if self._on_event and event_name not in ("LEVEL", None):
+                                        threading.Thread(
+                                            target=self._on_event,
+                                            args=(event_name,), daemon=True
+                                        ).start()
                             except (json.JSONDecodeError, ValueError):
                                 pass
             except Exception:
@@ -666,30 +676,175 @@ class SesameRobotController:
         return self.send_command("stop")
 
 
+# ── SesameMemory ───────────────────────────────────────────────────────────────
+
+class SesameMemory:
+    """Three-tier persistence: response cache, user profile, session summaries."""
+
+    SESAME_DIR = pathlib.Path.home() / ".sesame"
+    MAX_CACHE = 500
+
+    def __init__(self):
+        self.SESAME_DIR.mkdir(exist_ok=True)
+        self._cache: dict = self._load_json("cache.json", {})
+        self._profile: dict = self._load_json(
+            "profile.json",
+            {"name": None, "favorites": [], "top_commands": {}}
+        )
+        self._last_summary: str = self._load_last_summary()
+
+    def _load_json(self, fname: str, default: dict) -> dict:
+        p = self.SESAME_DIR / fname
+        try:
+            if p.exists():
+                return json.loads(p.read_text())
+        except Exception:
+            pass
+        return dict(default)
+
+    def _save_json(self, fname: str, data: dict):
+        try:
+            (self.SESAME_DIR / fname).write_text(json.dumps(data, indent=2))
+        except Exception as e:
+            print(f"[Memory] save {fname} failed: {e}")
+
+    def _load_last_summary(self) -> str:
+        p = self.SESAME_DIR / "sessions.jsonl"
+        if not p.exists():
+            return ""
+        try:
+            lines = [l for l in p.read_text().splitlines() if l.strip()]
+            if lines:
+                return json.loads(lines[-1]).get("summary", "")
+        except Exception:
+            pass
+        return ""
+
+    def _normalize(self, text: str) -> str:
+        return re.sub(r'[^\w\s]', '', text.lower()).strip()
+
+    def cache_get(self, text: str) -> Optional[dict]:
+        key = self._normalize(text)
+        entry = self._cache.get(key)
+        if entry:
+            entry["hits"] = entry.get("hits", 0) + 1
+            entry["last_used"] = time.time()
+            return entry
+        return None
+
+    def cache_set(self, text: str, result: dict):
+        key = self._normalize(text)
+        if len(self._cache) >= self.MAX_CACHE:
+            oldest_key = min(self._cache, key=lambda k: self._cache[k].get("last_used", 0))
+            del self._cache[oldest_key]
+        self._cache[key] = {
+            "command": result.get("command"),
+            "face": result.get("face"),
+            "response": result.get("response"),
+            "hits": 0,
+            "last_used": time.time(),
+        }
+        self._save_json("cache.json", self._cache)
+
+    def update_profile_from_text(self, text: str):
+        changed = False
+        m = re.search(r"(?:my name is|i'?m|call me)\s+([A-Za-z]+)", text, re.IGNORECASE)
+        if m and not self._profile.get("name"):
+            self._profile["name"] = m.group(1).capitalize()
+            changed = True
+        m2 = re.search(r"(?:i love|i like|my favorite\w* is)\s+(.+?)(?:\.|!|\?|$)", text, re.IGNORECASE)
+        if m2:
+            fav = m2.group(1).strip()
+            if fav and fav not in self._profile.get("favorites", []):
+                self._profile.setdefault("favorites", []).append(fav)
+                changed = True
+        if changed:
+            self._save_json("profile.json", self._profile)
+
+    def update_command_count(self, command: str):
+        if command:
+            tc = self._profile.setdefault("top_commands", {})
+            tc[command] = tc.get(command, 0) + 1
+            self._save_json("profile.json", self._profile)
+
+    def profile_context(self) -> str:
+        parts = []
+        if self._profile.get("name"):
+            parts.append(f"The child's name is {self._profile['name']}.")
+        if self._profile.get("favorites"):
+            parts.append(f"Their favorites: {', '.join(self._profile['favorites'][:3])}.")
+        if self._last_summary:
+            parts.append(f"Last time: {self._last_summary}")
+        return " ".join(parts)
+
+    def save_session_summary(self, summary: str):
+        p = self.SESAME_DIR / "sessions.jsonl"
+        try:
+            with p.open("a") as f:
+                f.write(json.dumps({"summary": summary, "ts": time.time()}) + "\n")
+            self._last_summary = summary
+        except Exception as e:
+            print(f"[Memory] save summary failed: {e}")
+
+
 # ── LocalLLMInterface ──────────────────────────────────────────────────────────
 
 class LocalLLMInterface:
     """Interface for local LLM (Ollama) via OpenAI-compatible API."""
 
+    MAX_HISTORY = 8   # 4 exchanges (user + assistant per exchange)
+
     def __init__(self, base_url: str, model_name: str):
         self.base_url = base_url.rstrip('/')
         self.model_name = model_name
+        self._history: list = []
 
-    def interpret_command(self, user_input: str,
-                          imu_context: str = "") -> Dict[str, Any]:
+    def clear_history(self):
+        self._history = []
+
+    def summarize_session(self) -> str:
+        if not self._history:
+            return ""
         try:
-            system = SHORT_SYSTEM_PROMPT
-            if imu_context:
-                system += f"\n\nContext: {imu_context}"
-
+            msgs = "\n".join(
+                f"{m['role'].upper()}: {m['content']}" for m in self._history[-8:]
+            )
             url = f"{self.base_url}/chat/completions"
             payload = {
                 "model": self.model_name,
                 "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user",   "content": f"User: {user_input}\n\nRespond with JSON only:"}
+                    {"role": "system",
+                     "content": "Summarize this robot-child interaction in 1-2 short sentences. Focus on what the child did and enjoyed."},
+                    {"role": "user", "content": msgs}
                 ],
-                "temperature": 0.7,
+                "temperature": 0.3,
+                "stream": False,
+            }
+            r = requests.post(url, json=payload,
+                              headers={"Content-Type": "application/json"}, timeout=20)
+            return r.json()['choices'][0]['message']['content'].strip()
+        except Exception:
+            return ""
+
+    def interpret_command(self, user_input: str,
+                          imu_context: str = "",
+                          memory_context: str = "") -> Dict[str, Any]:
+        try:
+            system = SHORT_SYSTEM_PROMPT
+            if memory_context:
+                system += f"\n\n{memory_context}"
+            if imu_context:
+                system += f"\n\nContext: {imu_context}"
+
+            messages = [{"role": "system", "content": system}]
+            messages.extend(self._history)
+            messages.append({"role": "user", "content": f"User: {user_input}\n\nRespond with JSON only:"})
+
+            url = f"{self.base_url}/chat/completions"
+            payload = {
+                "model": self.model_name,
+                "messages": messages,
+                "temperature": 0.4,
                 "think": False,
                 "stream": False,
                 "format": "json",
@@ -713,7 +868,15 @@ class LocalLLMInterface:
             if content.endswith("```"):
                 content = content[:-3]
             parsed = json.loads(content.strip())
-            return _normalize_llm(parsed)
+            result = _normalize_llm(parsed)
+
+            # Append to sliding history window
+            self._history.append({"role": "user", "content": user_input})
+            self._history.append({"role": "assistant", "content": result.get("response", "")})
+            if len(self._history) > self.MAX_HISTORY:
+                self._history = self._history[-self.MAX_HISTORY:]
+
+            return result
 
         except Exception as e:
             return {"response": f"Local AI connection failed: {e}"}
@@ -901,6 +1064,9 @@ class RobotVoiceReceiver:
 class SesameCompanionApp:
     """Main application: LLM + robot control + voice + robot voice receiver."""
 
+    IDLE_PHRASE_SECS = 180   # 3 min → speak idle phrase
+    IDLE_SLEEP_SECS  = 300   # 5 min → robot sleep
+
     def __init__(self, robot_ip: str, sesame_local: bool, gemini_api_key: str,
                  voice_enabled: bool = True, tts_engine: str = "pyttsx3",
                  wake_word: str = "hey sesame", wake_word_mode: bool = False):
@@ -922,8 +1088,29 @@ class SesameCompanionApp:
         self.tts_engine = tts_engine
         self.wake_word_mode = wake_word_mode
 
-        # IMU state (enriches LLM context)
-        self.imu = ImuStateTracker()
+        # Persistent memory (cache / profile / session summaries)
+        self.memory = SesameMemory()
+
+        # Kids content layer
+        self._kids_mode = os.getenv("KIDS_MODE", "true").lower() == "true"
+        if self._kids_mode:
+            try:
+                from sesame_companion_kids import KidsCommandLayer
+                self._kids = KidsCommandLayer()
+                print("[INFO] Kids content layer enabled")
+            except ImportError:
+                self._kids = None
+                print("[WARNING] Kids content layer unavailable (sesame_companion_kids.py not found)")
+        else:
+            self._kids = None
+
+        # Idle/sleep state
+        self._sleeping = False
+        self._last_interaction = time.time()
+        self._idle_phrase_fired = False
+
+        # IMU state — on_event resets idle timer and wakes robot
+        self.imu = ImuStateTracker(on_event=self._on_imu_event)
         self.imu.start(robot_ip)
 
         # Robot voice receiver (handles ESP-SR wake word audio from robot)
@@ -933,18 +1120,125 @@ class SesameCompanionApp:
             on_interaction=None   # set by GUI: app.robot_voice.on_interaction = callback
         )
 
+        # Start idle monitor thread
+        t = threading.Thread(target=self._idle_loop, daemon=True)
+        t.start()
+
     def start_robot_voice_receiver(self):
         """Start the TCP server that receives audio from the robot's wake word."""
         self.robot_voice.start()
 
+    def _reset_idle(self):
+        self._last_interaction = time.time()
+        self._idle_phrase_fired = False
+
+    def _wake_robot(self):
+        if self._sleeping:
+            print("[Idle] Waking robot")
+            self.robot.send_command("wake")
+            time.sleep(0.3)
+            self._sleeping = False
+
+    def _on_imu_event(self, event_name: str):
+        """Called from IMU listener thread on PICKUP, TAPPED, etc."""
+        self._reset_idle()
+        if event_name in ("PICKUP", "TAPPED"):
+            self._wake_robot()
+
+    def _idle_loop(self):
+        _IDLE_PHRASES = [
+            "Is anyone there?",
+            "I'm bored — wanna play?",
+            "Hey, come play with me!",
+            "Helloooo? I miss you!",
+        ]
+        while True:
+            time.sleep(10)
+            idle_secs = time.time() - self._last_interaction
+            if self._sleeping:
+                continue
+            if idle_secs >= self.IDLE_SLEEP_SECS:
+                print("[Idle] 5 min idle — putting robot to sleep")
+                subprocess.Popen(['say', '-r', '180', 'Going to sleep now... zzz'])
+                self.robot.send_command("sleep")
+                self._sleeping = True
+                # Save session summary on sleep
+                try:
+                    summary = self.ai.summarize_session() if hasattr(self.ai, 'summarize_session') else ""
+                    if summary:
+                        self.memory.save_session_summary(summary)
+                        print(f"[Memory] Session summary saved: {summary!r}")
+                    self.ai.clear_history() if hasattr(self.ai, 'clear_history') else None
+                except Exception as e:
+                    print(f"[Idle] Session summary failed: {e}")
+            elif idle_secs >= self.IDLE_PHRASE_SECS and not self._idle_phrase_fired:
+                phrase = random.choice(_IDLE_PHRASES)
+                print(f"[Idle] 3 min idle — saying: {phrase!r}")
+                subprocess.Popen(['say', '-r', '180', phrase])
+                self._idle_phrase_fired = True
+
     def process_input(self, user_input: str) -> tuple:
         """Process laptop-typed/spoken input through AI and control robot."""
+        self._reset_idle()
+        self._wake_robot()
+
+        # Kids content layer (pre-LLM, ~0ms latency)
+        if self._kids:
+            kids_result = self._kids.match(user_input)
+            if kids_result:
+                interpretation = kids_result
+                print(f"[Kids] Match: {interpretation}")
+                command = interpretation.get("command")
+                face = interpretation.get("face")
+                response_text = interpretation.get("response", "")
+                if command and command in AVAILABLE_COMMANDS:
+                    self.robot.send_command(command, face)
+                elif face and face in AVAILABLE_FACES:
+                    self.robot.send_command("idle", face)
+                out = "[Kids] "
+                if response_text:
+                    out += f"Sesame says: {response_text}"
+                if command:
+                    out += f"\nAction: {command}"
+                return (out, interpretation)
+
+        # Response cache (exact-match instant recall)
+        cached = self.memory.cache_get(user_input)
+        if cached:
+            print(f"[Cache] Hit for: {user_input!r}")
+            interpretation = cached
+            command = cached.get("command")
+            face = cached.get("face")
+            if command and command in AVAILABLE_COMMANDS:
+                self.robot.send_command(command, face)
+            elif face and face in AVAILABLE_FACES:
+                self.robot.send_command("idle", face)
+            return (f"[Cache] Sesame says: {cached.get('response', '')}", interpretation)
+
+        # Profile context for richer LLM responses
+        mem_ctx = self.memory.profile_context()
         imu_ctx = self.imu.context_string()
-        interpretation = _normalize_llm(self.ai.interpret_command(user_input, imu_ctx))
+
+        if hasattr(self.ai, 'interpret_command'):
+            import inspect
+            sig = inspect.signature(self.ai.interpret_command)
+            if 'memory_context' in sig.parameters:
+                interpretation = _normalize_llm(self.ai.interpret_command(user_input, imu_ctx, mem_ctx))
+            else:
+                interpretation = _normalize_llm(self.ai.interpret_command(user_input, imu_ctx))
+        else:
+            interpretation = _normalize_llm(self.ai.interpret_command(user_input, imu_ctx))
+
         if interpretation.get("command") is None:
             inferred = _infer_command(user_input)
             if inferred:
                 interpretation["command"] = inferred
+
+        # Update profile and cache
+        self.memory.update_profile_from_text(user_input)
+        if interpretation.get("command"):
+            self.memory.update_command_count(interpretation["command"])
+        self.memory.cache_set(user_input, interpretation)
 
         # Conversational response (face only)
         if "response" in interpretation and not interpretation.get("command"):
@@ -958,7 +1252,7 @@ class SesameCompanionApp:
         # Execute robot command
         if "command" in interpretation and interpretation["command"]:
             command = interpretation["command"]
-            face = interpretation.get("face") or None   # pass face for all commands now
+            face = interpretation.get("face") or None
             ai_response = interpretation.get("response", "")
 
             if command not in AVAILABLE_COMMANDS:
