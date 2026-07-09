@@ -16,3 +16,7 @@ pyttsx3>=2.90
 # google-generativeai>=0.3.0
 # google-genai>=0.1.0
 # pygame>=2.5.0
+
+# Vision (camera stream from robot on port 8891)
+opencv-python>=4.8.0,<5.0   # cv2.CascadeClassifier removed in OpenCV 5
+Pillow>=10.0.0

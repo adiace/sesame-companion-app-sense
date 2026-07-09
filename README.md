@@ -43,7 +43,7 @@ SESAME_LOCAL=true
 TTS_ENGINE=pyttsx3                # 'pyttsx3' uses macOS say; 'gemini' requires GEMINI_API_KEY
 WAKE_WORD=hey sesame
 WAKE_WORD_MODE=false
-KIDS_MODE=true                    # pre-LLM canned content for ages 3–6
+QUICK_MODE=true                    # pre-LLM instant responses (jokes, animal sounds, Q&A)
 ```
 
 To test without a robot: `SESAME_ROBOT_IP=mock`
@@ -73,13 +73,13 @@ python3 sesame_gui.py
 
 **Voice mode** — click the mic button to speak. Click again to cancel. Transcribed by `faster_whisper` locally, then sent to the LLM.
 
-**Robot voice (on-device wake word)** — the robot's own mic detects "Hi ESP", records a clip, and sends it to the companion app on port 8889. The app transcribes, queries the LLM, speaks the response with `say`, and sends the WAV back so the robot plays it on its speaker — all automatically, no button press needed.
+**Robot voice (on-device wake word)** — the robot's own mic detects "Hi Wall-E", records a clip, and sends it to the companion app on port 8889. The app transcribes, queries the LLM, speaks the response with `say`, and sends the WAV back so the robot plays it on its speaker — all automatically, no button press needed.
 
 ---
 
-## Kids content layer
+## Quick response layer
 
-With `KIDS_MODE=true` (default), a pre-LLM keyword layer intercepts common requests before they ever reach Ollama — responses are instant (~0 ms).
+With `QUICK_MODE=true` (default), a pre-LLM quick response layer intercepts common requests before they ever reach Ollama — responses are instant (~0 ms).
 
 **Jokes** — any request containing "joke", "funny", "laugh", or "silly" picks a random age 3–6 joke from a built-in list of 15. No WAV files needed — Sesame speaks via `say`.
 
@@ -99,7 +99,7 @@ With `KIDS_MODE=true` (default), a pre-LLM keyword layer intercepts common reque
 | "hello" / "hi" | one of 3 greeting phrases | wave |
 | "thank you" | "You're welcome! You're the best!" | cute |
 
-Set `KIDS_MODE=false` to route all input through the LLM.
+Set `QUICK_MODE=false` to route all input through the LLM.
 
 ---
 
@@ -137,7 +137,7 @@ Profile context is appended to the system prompt automatically. Once the child m
 ## Voice pipeline
 
 ```
-Robot mic detects "Hi ESP"
+Robot mic detects "Hi Wall-E"
     → records 4s PCM
     → streams to companion app :8889
 
@@ -158,8 +158,8 @@ Companion app (RobotVoiceReceiver):
 |---|---|
 | `sesame_companion.py` | Core library — LLM, STT, TTS, robot TCP controller, robot voice receiver, idle timer, persistent memory |
 | `sesame_gui.py` | Tkinter GUI — chat, quick actions, mic button, settings |
-| `sesame_companion_kids.py` | Pre-LLM keyword matcher — jokes, animal sounds, simple Q&A |
-| `kids_content.py` | Content data — joke list, animal sound map, Q&A map |
+| `sesame_quick_responses.py` | Pre-LLM quick response layer — jokes, animal sounds, simple Q&A |
+| `quick_content.py` | Content data — joke list, animal sound map, Q&A map |
 | `robot_link.py` | Low-level TCP + serial transport |
 | `robot.py` | CLI bridge — send single commands or timed sequences |
 | `imu_receiver.py` | Print IMU events from the robot in real time |

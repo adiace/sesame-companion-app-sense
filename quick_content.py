@@ -1,5 +1,5 @@
 """
-Pre-LLM canned content for the kids content layer.
+Pre-LLM canned content — instant responses that bypass the LLM.
 All entries are age 3-6 safe: simple, positive, no adult concepts.
 """
 

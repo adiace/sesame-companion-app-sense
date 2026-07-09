@@ -1,18 +1,18 @@
 """
-Pre-LLM keyword matching for the Sesame kids content layer.
+Pre-LLM keyword matching — instant responses that bypass the LLM entirely.
 Returns the same {command, face, response} dict shape as the LLM, or None to fall through.
 """
 
 import random
 from typing import Optional
 
-from kids_content import ANIMAL_SOUNDS, JOKES, QA_RESPONSES, get_time_response
+from quick_content import ANIMAL_SOUNDS, JOKES, QA_RESPONSES, get_time_response
 
 _JOKE_TRIGGERS = {"joke", "funny", "laugh", "silly", "make me laugh", "tell me a joke"}
 _ANIMAL_PREFIXES = {"sound", "say", "go", "noise", "what sound", "what does", "how does"}
 
 
-class KidsCommandLayer:
+class QuickResponseLayer:
 
     def match(self, text: str) -> Optional[dict]:
         t = text.lower().strip()

@@ -13,6 +13,7 @@ Changes from upstream dorianborian/sesame-companion-app:
   - Gemini kept as optional fallback; set SESAME_LOCAL=false + GEMINI_API_KEY
 """
 
+import datetime
 import json
 import os
 import pathlib
@@ -26,6 +27,12 @@ import tempfile
 import threading
 import time
 from typing import Any, Dict, Optional
+
+try:
+    from sesame_vision import RobotVisionReceiver, VisionCommandLayer
+    _VISION_AVAILABLE = True
+except ImportError:
+    _VISION_AVAILABLE = False
 
 import numpy as np
 import requests
@@ -217,6 +224,15 @@ happy, sad, angry, surprised, sleepy, love, excited, confused, default
 SHORT_SYSTEM_PROMPT = SYSTEM_PROMPT
 
 
+def _now_context() -> str:
+    """Current date/time line appended to the system prompt at request time,
+    so the LLM can answer 'what day is it?' instead of deflecting."""
+    now = datetime.datetime.now()
+    return (f"Right now it is {now.strftime('%A, %B %-d, %Y')} and the time is "
+            f"{now.strftime('%-I:%M %p')}. If asked about the date, day, or time, "
+            f"answer from this.")
+
+
 # ── Local STT (faster_whisper) ─────────────────────────────────────────────────
 
 _WHISPER_PROMPT = (
@@ -264,10 +280,22 @@ def _text_to_wav_macos(text: str) -> bytes:
     try:
         subprocess.run(['say', '-o', aiff, '--', text],
                        check=True, capture_output=True, timeout=30)
+        # Convert + normalize to full scale so the robot speaker gets maximum signal
         subprocess.run(
             ['afconvert', '-f', 'WAVE', '-d', 'LEI16@16000', '-c', '1', aiff, wav],
             check=True, capture_output=True, timeout=15
         )
+        # Boost WAV to near full scale using sox if available
+        try:
+            boosted = tempfile.mktemp(suffix='.wav')
+            result = subprocess.run(
+                ['sox', wav, boosted, 'norm', '-1'],
+                capture_output=True, timeout=15
+            )
+            if result.returncode == 0:
+                os.replace(boosted, wav)
+        except Exception:
+            pass  # sox not installed — skip normalization
         with open(wav, 'rb') as f:
             return f.read()
     except Exception as e:
@@ -623,11 +651,24 @@ class SesameRobotController:
             s.settimeout(None)
             self._sock = s
             print(f"[TCP] Connected to {self.robot_ip}:{self.TCP_PORT}")
+            self._on_robot_connected()
             return True
         except Exception as e:
             print(f"[TCP] Connect failed: {e}")
             self._sock = None
             return False
+
+    def _on_robot_connected(self):
+        """Called each time a TCP connection to the robot is established."""
+        if getattr(self, "vision", None) is not None:
+            def _send():
+                import time; time.sleep(0.5)   # let the socket settle
+                try:
+                    self._tcp_send("vision start")
+                    print("[INFO] Vision start sent to robot (on connect)")
+                except Exception:
+                    pass
+            threading.Thread(target=_send, daemon=True).start()
 
     def _tcp_send(self, line: str):
         """Send a newline-terminated command string over the persistent socket."""
@@ -782,7 +823,7 @@ class LocalLLMInterface:
                           imu_context: str = "",
                           memory_context: str = "") -> Dict[str, Any]:
         try:
-            system = SHORT_SYSTEM_PROMPT
+            system = SHORT_SYSTEM_PROMPT + "\n\n" + _now_context()
             if memory_context:
                 system += f"\n\n{memory_context}"
             if imu_context:
@@ -847,7 +888,7 @@ class GeminiInterface:
     def interpret_command(self, user_input: str,
                           imu_context: str = "") -> Dict[str, Any]:
         try:
-            system = SYSTEM_PROMPT
+            system = SYSTEM_PROMPT + "\n\n" + _now_context()
             if imu_context:
                 system += f"\n\nContext: {imu_context}"
             prompt = f"{system}\n\nUser: {user_input}\n\nRespond with JSON only:"
@@ -888,6 +929,7 @@ class RobotVoiceReceiver:
         self.llm = llm
         self.robot = robot
         self.on_interaction = on_interaction   # callback(user_text: str, result: dict)
+        self.pre_check = None   # optional callback(text) → dict|None; set by SesameCompanionApp
         self._whisper = None
         self._server: Optional[socket.socket] = None
         self._running = False
@@ -947,17 +989,31 @@ class RobotVoiceReceiver:
             user_text = " ".join(s.text for s in segments).strip()
             print(f"[RobotVoice] Heard: {user_text!r}")
 
-            if not user_text:
+            # Gibberish guard: beeps/noise transcribe as things like "2." or "-".
+            # Require at least one real word (2+ letters) before involving the LLM,
+            # which happily hallucinates a command from anything.
+            if not user_text or not re.search(r"[a-zA-Z]{2,}", user_text):
+                if user_text:
+                    print("[RobotVoice] Ignoring non-speech transcription")
                 conn.sendall(struct.pack("<I", 0))
                 return
 
-            # LLM
-            result        = _normalize_llm(self.llm.interpret_command(user_text))
-            if result.get("command") is None:
-                inferred = _infer_command(user_text)
-                if inferred:
-                    result["command"] = inferred
-                    print(f"[RobotVoice] Inferred command from speech: {inferred!r}")
+            # Pre-LLM layers (vision, quick response) — same pipeline as process_input()
+            result = None
+            if self.pre_check:
+                result = self.pre_check(user_text)
+                if result:
+                    print(f"[RobotVoice] Pre-check hit: {result.get('command')!r}")
+
+            # LLM (only if pre-check didn't match)
+            if result is None:
+                result = _normalize_llm(self.llm.interpret_command(user_text))
+                if result.get("command") is None:
+                    inferred = _infer_command(user_text)
+                    if inferred:
+                        result["command"] = inferred
+                        print(f"[RobotVoice] Inferred command from speech: {inferred!r}")
+
             response_text = result.get("response") or ""
             command       = result.get("command")
             face          = result.get("face")
@@ -1043,18 +1099,18 @@ class SesameCompanionApp:
         # Persistent memory (cache / profile / session summaries)
         self.memory = SesameMemory()
 
-        # Kids content layer
-        self._kids_mode = os.getenv("KIDS_MODE", "true").lower() == "true"
-        if self._kids_mode:
+        # Quick response layer — pre-LLM keyword matching (jokes, animal sounds, Q&A)
+        self._quick_mode = os.getenv("QUICK_MODE", "true").lower() == "true"
+        if self._quick_mode:
             try:
-                from sesame_companion_kids import KidsCommandLayer
-                self._kids = KidsCommandLayer()
-                print("[INFO] Kids content layer enabled")
+                from sesame_quick_responses import QuickResponseLayer
+                self._quick = QuickResponseLayer()
+                print("[INFO] Quick response layer enabled")
             except ImportError:
-                self._kids = None
-                print("[WARNING] Kids content layer unavailable (sesame_companion_kids.py not found)")
+                self._quick = None
+                print("[WARNING] Quick response layer unavailable (sesame_quick_responses.py not found)")
         else:
-            self._kids = None
+            self._quick = None
 
         # Idle/sleep state
         self._sleeping = False
@@ -1071,10 +1127,38 @@ class SesameCompanionApp:
             robot=self.robot,
             on_interaction=None   # set by GUI: app.robot_voice.on_interaction = callback
         )
+        self.robot_voice.pre_check = self._voice_pre_check
 
         # Start idle monitor thread
         t = threading.Thread(target=self._idle_loop, daemon=True)
         t.start()
+
+        # Vision receiver (camera JPEG stream from robot on port 8891)
+        if _VISION_AVAILABLE and os.getenv("VISION_PASSIVE", "true").lower() == "true":
+            self.vision = RobotVisionReceiver(
+                robot=self.robot,
+                on_reaction=self._on_passive_reaction,
+                on_frame=None,   # set by GUI: app.vision.on_frame = callback
+            )
+            self.vision.start()
+            self._vision_cmd_layer = VisionCommandLayer()
+            print("[INFO] Vision receiver active (port 8891)")
+            # Probe for camera: send "vision start" and check if frames arrive.
+            def _probe():
+                time.sleep(3)
+                try:
+                    self.robot.send_command("vision start")
+                    print("[INFO] Vision start sent to robot")
+                except Exception:
+                    pass
+                # Give the robot 10s to connect and send a frame
+                time.sleep(10)
+                if self.vision and not self.vision.has_camera:
+                    print("[INFO] No camera detected — vision features disabled")
+            threading.Thread(target=_probe, daemon=True).start()
+        else:
+            self.vision = None
+            self._vision_cmd_layer = None
 
     def start_robot_voice_receiver(self):
         """Start the TCP server that receives audio from the robot's wake word."""
@@ -1096,6 +1180,71 @@ class SesameCompanionApp:
         self._reset_idle()
         if event_name in ("PICKUP", "TAPPED"):
             self._wake_robot()
+
+    def _voice_pre_check(self, text: str) -> Optional[dict]:
+        """Check vision and quick response layers for voice input from the robot mic.
+        Returns a result dict if matched, None to fall through to the LLM.
+        Also executes the matched command so the caller just needs the response text."""
+        self._reset_idle()
+        self._wake_robot()
+
+        # Vision command layer — only if camera is actually streaming
+        if self._vision_cmd_layer and self.vision and self.vision.has_camera:
+            vis = self._vision_cmd_layer.match(text)
+            if vis:
+                game   = vis["game"]
+                target = vis["target"]
+                print(f"[RobotVoice/Vision] Match: game={game} target={target}")
+                if game == "stop":
+                    self.vision.set_passive()
+                    self.robot.send_command("stop")
+                else:
+                    self.vision.set_active(game, target)
+                    self.robot.send_command("vision start")
+                return vis
+
+        # Quick response layer
+        if self._quick:
+            kids_result = self._quick.match(text)
+            if kids_result:
+                command = kids_result.get("command")
+                face    = kids_result.get("face")
+                if command and command in AVAILABLE_COMMANDS:
+                    self.robot.send_command(command, face)
+                elif face and face in AVAILABLE_FACES:
+                    self.robot.send_command("idle", face)
+                return kids_result
+
+        return None
+
+    on_passive_reaction: Optional[Callable] = None   # set by GUI: app.on_passive_reaction = cb
+
+    def _on_passive_reaction(self, reaction: str):
+        """Called by RobotVisionReceiver when a passive trigger fires."""
+        self._reset_idle()
+        self._wake_robot()
+        if self.on_passive_reaction:
+            try:
+                self.on_passive_reaction(reaction)
+            except Exception:
+                pass
+        # Map reaction to robot command (plays WAV + face on the robot itself)
+        cmd_map = {
+            "peekaboo":   "boo",    # plays boo.wav + surprised face
+            "wave":       "wave",   # wave animation + happy face (set via second arg)
+            "face_close": "cute",   # cute pose + love face
+            "found":      "found",  # plays found.wav + happy face
+        }
+        face_map = {
+            "peekaboo":   None,      # face is set by firmware
+            "wave":       "happy",
+            "face_close": "love",
+            "found":      None,
+        }
+        cmd  = cmd_map.get(reaction)
+        face = face_map.get(reaction)
+        if cmd:
+            self.robot.send_command(cmd, face)
 
     def _idle_loop(self):
         _IDLE_PHRASES = [
@@ -1125,12 +1274,29 @@ class SesameCompanionApp:
         self._reset_idle()
         self._wake_robot()
 
-        # Kids content layer (pre-LLM, ~0ms latency)
-        if self._kids:
-            kids_result = self._kids.match(user_input)
+        # Vision command layer (pre-LLM, checked first)
+        if self._vision_cmd_layer:
+            vis = self._vision_cmd_layer.match(user_input)
+            if vis:
+                game   = vis["game"]
+                target = vis["target"]
+                resp   = vis["response"]
+                print(f"[Vision] Match: game={game} target={target}")
+                if game == "stop":
+                    if self.vision:
+                        self.vision.set_passive()
+                    self.robot.send_command("stop")
+                elif self.vision:
+                    self.vision.set_active(game, target)
+                    self.robot.send_command("vision start")
+                return (f"[Vision] {resp}", vis)
+
+        # Quick response layer (pre-LLM, ~0ms latency)
+        if self._quick:
+            kids_result = self._quick.match(user_input)
             if kids_result:
                 interpretation = kids_result
-                print(f"[Kids] Match: {interpretation}")
+                print(f"[Quick] Match: {interpretation}")
                 command = interpretation.get("command")
                 face = interpretation.get("face")
                 response_text = interpretation.get("response", "")
@@ -1138,7 +1304,7 @@ class SesameCompanionApp:
                     self.robot.send_command(command, face)
                 elif face and face in AVAILABLE_FACES:
                     self.robot.send_command("idle", face)
-                out = "[Kids] "
+                out = "[Quick] "
                 if response_text:
                     out += f"Sesame says: {response_text}"
                 if command:

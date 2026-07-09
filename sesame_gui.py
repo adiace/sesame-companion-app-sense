@@ -14,6 +14,18 @@ from sesame_companion import (SesameCompanionApp, SesameRobotController,
                               AVAILABLE_COMMANDS, AVAILABLE_FACES)
 
 try:
+    from PIL import Image, ImageTk
+    _PIL_AVAILABLE = True
+except ImportError:
+    _PIL_AVAILABLE = False
+
+try:
+    import cv2
+    _CV2_GUI_AVAILABLE = True
+except ImportError:
+    _CV2_GUI_AVAILABLE = False
+
+try:
     from dotenv import load_dotenv
     load_dotenv()
 except ImportError:
@@ -23,8 +35,8 @@ class SesameGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Sesame Robot Companion")
-        self.root.geometry("900x700")
-        self.root.minsize(800, 600)
+        self.root.geometry("1080x780")
+        self.root.minsize(900, 680)
         
         self.robot_ip = os.getenv("SESAME_ROBOT_IP", "192.168.1.1")
         self.sesame_local = os.getenv("SESAME_LOCAL", "false").lower() == "true"
@@ -38,6 +50,12 @@ class SesameGUI:
         self.is_speaking = False
         self.app: SesameCompanionApp = None   # set by init_app thread; guard all access
         self.message_queue = queue.Queue()
+
+        # Camera panel state
+        self._latest_frame: bytes = b""
+        self._frame_lock = threading.Lock()
+        self._cam_photo = None   # keep reference so Tkinter doesn't GC it
+        self._pending_pil = None     # PIL Image decoded on bg thread, converted on main thread
         
         # Theme
         self.bg_color = "#1e1e1e"
@@ -92,58 +110,97 @@ class SesameGUI:
         
         content_frame = ttk.Frame(main_frame)
         content_frame.pack(fill=tk.BOTH, expand=True, pady=10)
-        
+
+        # Left column — quick action buttons
         left_frame = ttk.Frame(content_frame)
         left_frame.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10))
         self.create_quick_actions(left_frame)
-        
+
+        # Right column — camera on top, status below. Width fixed by camera canvas (320px).
+        right_frame = ttk.Frame(content_frame)
+        right_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=(10, 0))
+        self.create_camera_panel(right_frame)
+        ttk.Separator(right_frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=8)
+        self.create_status_panel(right_frame)
+
+        # Center column — chat (expands to fill remaining space)
         center_frame = ttk.Frame(content_frame)
-        center_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+        center_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.create_chat_area(center_frame)
         
-        right_frame = ttk.Frame(content_frame)
-        right_frame.pack(side=tk.LEFT, fill=tk.Y)
-        self.create_settings_panel(right_frame)
-        
     def create_status_bar(self, parent):
-        """Create the top status bar"""
+        """Create the top title bar."""
         status_frame = ttk.Frame(parent)
         status_frame.pack(fill=tk.X, pady=(0, 10))
-        
-        title_label = ttk.Label(status_frame, text="SESAME DESKTOP INTERFACE", font=("Segoe UI", 20, "bold"))
-        title_label.pack(side=tk.LEFT)
-        
-        self.connection_label = ttk.Label(status_frame, text="[*] Disconnected", font=("Segoe UI", 10))
-        self.connection_label.pack(side=tk.RIGHT, padx=10)
-        
-        self.robot_status_label = ttk.Label(status_frame, text="Status: Idle", font=("Segoe UI", 10))
-        self.robot_status_label.pack(side=tk.RIGHT, padx=10)
+        ttk.Label(status_frame, text="SESAME DESKTOP INTERFACE",
+                  font=("Segoe UI", 20, "bold")).pack(side=tk.LEFT)
+        # robot_status_label kept as invisible stub — referenced by process_queue
+        self.robot_status_label = ttk.Label(status_frame, text="")
+        self.connection_label   = ttk.Label(status_frame, text="")   # lives in right panel now
         
     def create_quick_actions(self, parent):
-        """Create quick action buttons panel"""
-        label = ttk.Label(parent, text="Quick Actions", font=("Segoe UI", 12, "bold"))
-        label.pack(pady=(0, 10))
-        
-        commands = [
-            ("Wave", "wave"),
-            ("Dance", "dance"),
-            ("Walk", "walk"),
-            ("Stand", "stand"),
-            ("Rest", "rest"),
-            ("Pushup", "pushup"),
-            ("Crab Walk", "crab"),
-            ("Box", "box"),
-            ("Swim", "swim"),
-            ("Bow", "bow"),
-            ("Stop", "stop"),
-        ]
-        
-        for text, command in commands:
-            btn = self._make_btn(parent, text, lambda cmd=command: self.send_quick_command(cmd))
-            btn.pack(fill=tk.X, pady=2)
-            
+        """D-pad movement, stop, poses, motor control, refresh."""
+
+        # ── D-pad ─────────────────────────────────────────────────────────────
+        ttk.Label(parent, text="Movement", font=("Segoe UI", 11, "bold")).pack(pady=(0, 6))
+
+        dpad = tk.Frame(parent, bg=self.bg_color)
+        dpad.pack()
+
+        def _dpad_btn(text, row, col, direction):
+            frm = tk.Frame(dpad, bg=self.btn_bg, cursor="hand2")
+            frm.grid(row=row, column=col, padx=3, pady=3)
+            lbl = tk.Label(frm, text=text, bg=self.btn_bg, fg=self.btn_fg,
+                           font=("Segoe UI", 16), width=3, pady=6, cursor="hand2")
+            lbl.pack()
+            def _press(e):  self._dpad_press(direction)
+            def _release(e): self._dpad_release()
+            def _enter(e):  lbl.config(bg=self.btn_hover); frm.config(bg=self.btn_hover)
+            def _leave(e):  lbl.config(bg=self.btn_bg);   frm.config(bg=self.btn_bg)
+            for w in (frm, lbl):
+                w.bind("<ButtonPress-1>",   _press)
+                w.bind("<ButtonRelease-1>", _release)
+                w.bind("<Enter>", _enter)
+                w.bind("<Leave>", _leave)
+
+        _dpad_btn("▲", 0, 1, "forward")
+        _dpad_btn("◄", 1, 0, "left")
+        _dpad_btn("▼", 1, 1, "backward")
+        _dpad_btn("►", 1, 2, "right")
+
+        stop_btn = self._make_btn(parent, "■  STOP", lambda: self.send_quick_command("stop"),
+                                  bg="#e63946", font=("Segoe UI", 10, "bold"), pady=6)
+        stop_btn.pack(fill=tk.X, pady=(8, 0))
+
         ttk.Separator(parent, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=10)
-        
+
+        # ── Poses ─────────────────────────────────────────────────────────────
+        ttk.Label(parent, text="Poses", font=("Segoe UI", 11, "bold")).pack(pady=(0, 6))
+
+        poses = [
+            ("Wave",  "wave"),  ("Dance", "dance"), ("Swim",   "swim"),
+            ("Stand", "stand"), ("Rest",  "rest"),  ("Pushup", "pushup"),
+            ("Bow",   "bow"),   ("Cute",  "cute"),  ("Crab",   "crab"),
+            ("Box",   "box"),   ("Shrug", "shrug"), ("Worm",   "worm"),
+        ]
+        pose_grid = tk.Frame(parent, bg=self.bg_color)
+        pose_grid.pack(fill=tk.X)
+        for idx, (text, cmd) in enumerate(poses):
+            row, col = divmod(idx, 2)
+            btn = self._make_btn(pose_grid, text,
+                                 lambda c=cmd: self.send_quick_command(c),
+                                 font=("Segoe UI", 9, "bold"), padx=6, pady=5)
+            btn.grid(row=row, column=col, padx=2, pady=2, sticky=tk.EW)
+        pose_grid.columnconfigure(0, weight=1)
+        pose_grid.columnconfigure(1, weight=1)
+
+        ttk.Separator(parent, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=10)
+
+        # ── Motor control + refresh ───────────────────────────────────────────
+        motor_btn = self._make_btn(parent, "Motor Control", self.open_motor_control,
+                                   font=("Segoe UI", 9, "bold"), pady=5)
+        motor_btn.pack(fill=tk.X, pady=(0, 4))
+
         refresh_btn = self._make_btn(parent, "Refresh Status", self.refresh_status,
                                      font=("Segoe UI", 9, "bold"), pady=5)
         refresh_btn.pack(fill=tk.X)
@@ -200,94 +257,103 @@ class SesameGUI:
                                      padx=15, pady=4)
         send_button.pack(side=tk.LEFT)
         
-    def create_settings_panel(self, parent):
-        """Create settings and info panel"""
-        ttk.Label(parent, text="Settings", font=("Segoe UI", 12, "bold")).pack(pady=(0, 10))
-        
-        voice_check = tk.Checkbutton(
-            parent,
-            text="Voice Mode",
-            variable=self.voice_enabled,
-            command=self.toggle_voice_mode,
-            bg=self.bg_color,
-            fg=self.text_color,
-            selectcolor=self.secondary_bg,
-            activebackground=self.bg_color,
-            activeforeground=self.text_color,
-            font=("Segoe UI", 10)
-        )
-        voice_check.pack(anchor=tk.W, pady=5)
-        
-        wake_check = tk.Checkbutton(
-            parent,
-            text=f"Wake Word Mode ({self.wake_word})",
-            variable=self.wake_word_mode,
-            command=self.toggle_wake_word_mode,
-            bg=self.bg_color,
-            fg=self.text_color,
-            selectcolor=self.secondary_bg,
-            activebackground=self.bg_color,
-            activeforeground=self.text_color,
-            font=("Segoe UI", 10)
-        )
-        wake_check.pack(anchor=tk.W, pady=5)
-        
-        ttk.Label(parent, text="TTS Engine:", font=("Segoe UI", 9)).pack(anchor=tk.W, pady=(10, 2))
-        
-        tts_frame = ttk.Frame(parent)
-        tts_frame.pack(fill=tk.X, pady=5)
-        
-        ttk.Radiobutton(
-            tts_frame,
-            text="pyttsx3 (Fast)",
-            variable=self.tts_engine,
-            value="pyttsx3",
-            command=self.change_tts_engine
-        ).pack(anchor=tk.W)
-        
-        ttk.Radiobutton(
-            tts_frame,
-            text="Gemini (Natural)",
-            variable=self.tts_engine,
-            value="gemini",
-            command=self.change_tts_engine
-        ).pack(anchor=tk.W)
-        
-        ttk.Separator(parent, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=15)
-        
-        ttk.Label(parent, text="Robot Info", font=("Segoe UI", 12, "bold")).pack(pady=(0, 10))
-        
-        info_frame = ttk.Frame(parent)
-        info_frame.pack(fill=tk.X)
-        
-        ttk.Label(info_frame, text="IP:", font=("Segoe UI", 9)).grid(row=0, column=0, sticky=tk.W, pady=2)
-        self.ip_label = ttk.Label(info_frame, text=self.robot_ip, font=("Segoe UI", 9, "bold"))
-        self.ip_label.grid(row=0, column=1, sticky=tk.W, pady=2, padx=5)
-        
-        ttk.Label(info_frame, text="Face:", font=("Segoe UI", 9)).grid(row=1, column=0, sticky=tk.W, pady=2)
-        self.face_label = ttk.Label(info_frame, text="unknown", font=("Segoe UI", 9, "bold"))
-        self.face_label.grid(row=1, column=1, sticky=tk.W, pady=2, padx=5)
-        
-        ttk.Label(info_frame, text="Command:", font=("Segoe UI", 9)).grid(row=2, column=0, sticky=tk.W, pady=2)
-        self.command_label = ttk.Label(info_frame, text="none", font=("Segoe UI", 9, "bold"))
-        self.command_label.grid(row=2, column=1, sticky=tk.W, pady=2, padx=5)
-        
-        ttk.Separator(parent, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=15)
-        
-        ttk.Label(parent, text="Available Commands", font=("Segoe UI", 10, "bold")).pack(pady=(0, 5))
-        
-        commands_text = scrolledtext.ScrolledText(
-            parent,
-            height=8,
-            wrap=tk.WORD,
-            font=("Consolas", 8),
-            bg=self.secondary_bg,
-            fg=self.text_color,
-            relief=tk.FLAT
-        )
-        commands_text.pack(fill=tk.BOTH)
-        commands_text.insert(tk.END, ", ".join(AVAILABLE_COMMANDS))
-        commands_text.config(state=tk.DISABLED)
+    def create_camera_panel(self, parent):
+        """Live camera feed panel with passive/active status badge."""
+        cam_outer = tk.Frame(parent, bg=self.bg_color)
+        cam_outer.pack(fill=tk.X, pady=(0, 10))
+
+        # Status badge row
+        badge_row = tk.Frame(cam_outer, bg=self.bg_color)
+        badge_row.pack(fill=tk.X)
+
+        self._cam_dot = tk.Label(badge_row, text="●", font=("Segoe UI", 10),
+                                 fg="#888888", bg=self.bg_color)
+        self._cam_dot.pack(side=tk.LEFT)
+
+        self._cam_status = tk.Label(badge_row, text="No camera",
+                                    font=("Segoe UI", 9), fg="#888888",
+                                    bg=self.bg_color)
+        self._cam_status.pack(side=tk.LEFT, padx=(4, 0))
+
+        # Video canvas — 320×240 to match robot QVGA
+        self._cam_canvas = tk.Canvas(cam_outer, width=320, height=240,
+                                     bg="#111111", highlightthickness=1,
+                                     highlightbackground="#444444")
+        self._cam_canvas.pack(pady=(4, 0))
+
+        # Placeholder text when no frame yet
+        self._cam_canvas.create_text(160, 120, text="Camera feed\n(say 'find the red lego')",
+                                     fill="#555555", font=("Segoe UI", 9),
+                                     justify=tk.CENTER, tags="placeholder")
+
+        # Start refresh loop (~3fps; non-blocking via after())
+        self.root.after(333, self._refresh_camera_frame)
+
+    def _refresh_camera_frame(self):
+        """Convert pre-decoded PIL image (from bg thread) to PhotoImage and display."""
+        pil_img = self._pending_pil
+        if pil_img is not None:
+            self._pending_pil = None
+            try:
+                self._cam_photo = ImageTk.PhotoImage(pil_img)
+                self._cam_canvas.delete("placeholder")
+                self._cam_canvas.create_image(0, 0, anchor=tk.NW, image=self._cam_photo)
+            except Exception:
+                pass
+
+        # Update status badge
+        if self.app and getattr(self.app, "vision", None):
+            status = self.app.vision.status()
+            dot_color = self.accent_color if status.startswith("ACTIVE") else self.success_color
+            self._cam_dot.config(fg=dot_color)
+            self._cam_status.config(text=status, fg=dot_color)
+        else:
+            self._cam_dot.config(fg="#888888")
+            self._cam_status.config(text="No camera", fg="#888888")
+
+        self.root.after(100, self._refresh_camera_frame)  # ~10fps check
+
+    def _on_vision_frame(self, jpeg: bytes):
+        """Called from RobotVisionReceiver thread — decode JPEG, store PIL for main thread."""
+        if not (_PIL_AVAILABLE and _CV2_GUI_AVAILABLE):
+            return
+        try:
+            import cv2, numpy as np
+            arr = np.frombuffer(jpeg, np.uint8)
+            bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+            if bgr is None:
+                return
+            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+            self._pending_pil = Image.fromarray(rgb).resize((320, 240), Image.NEAREST)
+        except Exception:
+            pass
+
+    def create_status_panel(self, parent):
+        """Consolidated status — connection, robot state, mic toggle."""
+        ttk.Label(parent, text="Status", font=("Segoe UI", 11, "bold")).pack(anchor=tk.W, pady=(0, 6))
+
+        grid = ttk.Frame(parent)
+        grid.pack(anchor=tk.W)
+
+        def _row(label, row, initial="—"):
+            ttk.Label(grid, text=label, font=("Segoe UI", 9),
+                      foreground="#888888").grid(row=row, column=0, sticky=tk.W, pady=2)
+            val = ttk.Label(grid, text=initial, font=("Segoe UI", 9, "bold"))
+            val.grid(row=row, column=1, sticky=tk.W, pady=2, padx=(8, 0))
+            return val
+
+        # Connection row has a coloured dot + text in one label
+        ttk.Label(grid, text="Connection", font=("Segoe UI", 9),
+                  foreground="#888888").grid(row=0, column=0, sticky=tk.W, pady=2)
+        self.connection_label = ttk.Label(grid, text="● Disconnected",
+                                          font=("Segoe UI", 9, "bold"),
+                                          foreground=self.error_color)
+        self.connection_label.grid(row=0, column=1, sticky=tk.W, pady=2, padx=(8, 0))
+
+        self.ip_label      = _row("IP",      1, self.robot_ip)
+        self.face_label    = _row("Face",    2, "—")
+        self.command_label = _row("Command", 3, "—")
+
         
     def start_backend(self):
         """Initialize the backend app in a separate thread"""
@@ -316,8 +382,21 @@ class SesameGUI:
                 self.app.robot_voice.on_interaction = _on_robot_voice
                 self.app.start_robot_voice_receiver()
 
+                # Wire camera frame callback → GUI display
+                if getattr(self.app, "vision", None):
+                    self.app.vision.on_frame = self._on_vision_frame
+
+                # Wire passive reaction → conversation window
+                _labels = {"wave": "Wave detected", "peekaboo": "Peek-a-boo!",
+                           "face_close": "Face close-up", "found": "Found it!"}
+                def _on_reaction(r):
+                    self.message_queue.put(("robot", f"[Camera] {_labels.get(r, r)}"))
+                self.app.on_passive_reaction = _on_reaction
+
                 self.message_queue.put(("system", "[OK] Backend initialized"))
                 self.message_queue.put(("system", "[OK] Robot voice receiver active (port 8889)"))
+                if getattr(self.app, "vision", None):
+                    self.message_queue.put(("system", "[OK] Vision receiver active (port 8891)"))
                 self.check_connection()
             except Exception as e:
                 self.message_queue.put(("error", f"Failed to initialize: {e}"))
@@ -429,6 +508,93 @@ class SesameGUI:
         thread = threading.Thread(target=listen, daemon=True)
         thread.start()
         
+    def _dpad_press(self, direction):
+        if not self.app:
+            return
+        def send():
+            try:
+                self.app.robot._tcp_send(direction)
+            except Exception:
+                pass
+        threading.Thread(target=send, daemon=True).start()
+
+    def _dpad_release(self):
+        if not self.app:
+            return
+        def send():
+            try:
+                self.app.robot._tcp_send("stop")
+            except Exception:
+                pass
+        threading.Thread(target=send, daemon=True).start()
+
+    def open_motor_control(self):
+        """Open a Toplevel with 8 servo sliders — mirrors captive portal motor panel."""
+        if not self.app:
+            self.add_message("error", "Not ready yet — backend still initializing")
+            return
+
+        win = tk.Toplevel(self.root)
+        win.title("Motor Control")
+        win.configure(bg=self.bg_color)
+        win.geometry("360x480")
+        win.resizable(False, False)
+
+        ttk.Label(win, text="Manual Motor Control",
+                  font=("Segoe UI", 12, "bold")).pack(pady=(14, 10))
+
+        SERVO_NAMES = [
+            "S0  R1 (right front hip)",
+            "S1  R2 (right rear hip)",
+            "S2  L1 (left front hip)",
+            "S3  L2 (left rear hip)",
+            "S4  R4 (right front knee)",
+            "S5  R3 (right rear knee)",
+            "S6  L3 (left front knee)",
+            "S7  L4 (left rear knee)",
+        ]
+
+        frame = tk.Frame(win, bg=self.bg_color)
+        frame.pack(fill=tk.BOTH, expand=True, padx=16)
+
+        for i, name in enumerate(SERVO_NAMES):
+            row = tk.Frame(frame, bg=self.bg_color)
+            row.pack(fill=tk.X, pady=3)
+
+            tk.Label(row, text=name, font=("Consolas", 8), bg=self.bg_color,
+                     fg="#aaaaaa", anchor=tk.W).pack(side=tk.TOP, anchor=tk.W)
+
+            ctrl = tk.Frame(row, bg=self.bg_color)
+            ctrl.pack(fill=tk.X)
+
+            val_lbl = tk.Label(ctrl, text="90°", font=("Segoe UI", 9, "bold"),
+                               bg=self.bg_color, fg=self.accent_color, width=4)
+            val_lbl.pack(side=tk.RIGHT)
+
+            def _on_change(v, idx=i, lbl=val_lbl):
+                angle = int(float(v))
+                lbl.config(text=f"{angle}°")
+                if self.app:
+                    def send(a=angle, s=idx):
+                        try:
+                            self.app.robot._tcp_send(f"servo {s} {a}")
+                        except Exception:
+                            pass
+                    threading.Thread(target=send, daemon=True).start()
+
+            slider = tk.Scale(ctrl, from_=0, to=180, orient=tk.HORIZONTAL,
+                              bg=self.secondary_bg, fg=self.text_color,
+                              highlightthickness=0, troughcolor="#333333",
+                              activebackground=self.accent_color,
+                              showvalue=False, command=_on_change)
+            slider.set(90)
+            slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
+
+        tk.Frame(win, bg="#e63946", cursor="hand2").pack(fill=tk.X, padx=16, pady=12)
+        close = self._make_btn(win, "Close", win.destroy,
+                               bg="#e63946", font=("Segoe UI", 10, "bold"), pady=7)
+        close.pack(fill=tk.X, padx=16, pady=(0, 14))
+
     def send_quick_command(self, command):
         """Send a quick command"""
         if not self.app:
@@ -541,13 +707,15 @@ class SesameGUI:
                     self.add_message(msg_type, data)
                 elif msg_type == "connection":
                     if data:
-                        self.connection_label.config(text="[+] Connected", foreground=self.success_color)
+                        self.connection_label.config(text="● Connected",
+                                                     foreground=self.success_color)
                     else:
-                        self.connection_label.config(text="[-] Disconnected", foreground=self.error_color)
+                        self.connection_label.config(text="● Disconnected",
+                                                     foreground=self.error_color)
                 elif msg_type == "status":
-                    self.face_label.config(text=data.get("currentFace", "unknown"))
-                    self.command_label.config(text=data.get("currentCommand", "none") or "none")
-                    self.robot_status_label.config(text=f"Status: {data.get('currentCommand', 'Idle')}")
+                    self.face_label.config(text=data.get("currentFace", "—") or "—")
+                    self.command_label.config(text=data.get("currentCommand", "—") or "—")
+                    self.robot_status_label.config(text="")   # stub, no longer displayed
                 elif msg_type == "voice_input":
                     self.add_message("user", f"[VOICE] {data}")
                     self.input_entry.insert(0, data)
