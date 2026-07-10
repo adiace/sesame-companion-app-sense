@@ -264,20 +264,20 @@ SHORT_SYSTEM_PROMPT = SYSTEM_PROMPT
 
 
 def _loudness_maximize(wav_path: str):
-    """Make a speech WAV as loud as possible without clipping: power-law
-    compression (|x|^0.6 lifts quiet parts) + peak normalization to -0.5dB."""
+    """Peak-normalize a speech WAV to just below full scale. Compression was
+    tried (power-law) but colored the voice audibly — normalization is
+    transparent; real loudness headroom is the amp GAIN pin (3V3=6dB → GND=12dB)."""
     import wave as _wave
     with _wave.open(wav_path, "rb") as w:
         params = w.getparams()
         pcm = w.readframes(w.getnframes())
     x = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
-    y = np.sign(x) * np.abs(x) ** 0.6
-    peak = float(np.abs(y).max())
-    if peak > 0:
-        y *= 0.94 / peak
+    peak = float(np.abs(x).max())
+    if peak > 0.01:
+        x *= 0.97 / peak
     with _wave.open(wav_path, "wb") as w:
         w.setparams(params)
-        w.writeframes((y * 32767).astype(np.int16).tobytes())
+        w.writeframes((x * 32767).astype(np.int16).tobytes())
 
 
 def _now_context() -> str:
