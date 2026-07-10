@@ -20,7 +20,7 @@ USAGE
 A line in --seq mode is either `wait <seconds>` (sleep) or any firmware
 command (sent verbatim). Blank lines and `# comments` are ignored.
 
-Transport: defaults to WiFi (quadruped.local:8888 via mDNS) and falls back to
+Transport: defaults to WiFi (sesame-robot.local:8888 via mDNS) and falls back to
 USB serial. Use --serial / --net to force one, --host to override the address.
 
 Firmware command surface (see docs/commands.md):
@@ -61,7 +61,7 @@ def main():
     ap = argparse.ArgumentParser(description="Bridge to the quadruped (WiFi/serial).")
     ap.add_argument("command", nargs="?", help="single firmware command to send")
     ap.add_argument("--seq", action="store_true", help="read a timed sequence from stdin")
-    ap.add_argument("--host", help="robot address (default: quadruped.local)")
+    ap.add_argument("--host", help="robot address (default: sesame-robot.local)")
     ap.add_argument("--serial", action="store_true", help="force USB serial")
     ap.add_argument("--net", action="store_true", help="force WiFi (no serial fallback)")
     args = ap.parse_args()

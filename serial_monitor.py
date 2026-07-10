@@ -6,7 +6,7 @@ Connects to the robot's debug log server (TCP port 8890) and prints all
 output that would normally appear in the Arduino Serial Monitor.
 
 Usage:
-  python software/serial_monitor.py              # auto-discovers quadruped.local
+  python software/serial_monitor.py              # auto-discovers sesame-robot.local
   python software/serial_monitor.py 192.168.1.X  # explicit IP
 
 The robot firmware must be running (flashed with wifi_log.h support).
@@ -17,7 +17,7 @@ import socket
 import sys
 import time
 
-HOST = sys.argv[1] if len(sys.argv) > 1 else "quadruped.local"
+HOST = sys.argv[1] if len(sys.argv) > 1 else "sesame-robot.local"
 PORT = 8890
 RECONNECT_DELAY = 3  # seconds between reconnect attempts
 

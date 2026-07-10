@@ -1602,7 +1602,7 @@ def main():
     wake_mode    = os.getenv("WAKE_WORD_MODE", "false").lower() == "true"
 
     if not robot_ip:
-        robot_ip = input("Enter robot IP (e.g. quadruped.local) or 'mock': ").strip()
+        robot_ip = input("Enter robot IP (e.g. sesame-robot.local) or 'mock': ").strip()
         if not robot_ip:
             print("Robot IP is required!")
             sys.exit(1)

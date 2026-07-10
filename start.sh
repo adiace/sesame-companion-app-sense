@@ -5,8 +5,8 @@
 # then launches the companion GUI in this window.
 #
 # Usage:
-#   ./start.sh                     # auto-discovers quadruped.local
-#   ./start.sh 192.168.68.100      # explicit robot IP
+#   ./start.sh                     # auto-discovers sesame-robot.local
+#   ./start.sh 192.168.1.42      # explicit robot IP
 set -e
 cd "$(dirname "$0")"
 

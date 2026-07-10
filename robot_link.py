@@ -2,7 +2,7 @@
 robot_link.py — transport to the quadruped, over WiFi (TCP) or USB (serial).
 
 Both robot.py and voice_control.py use connect() from here. Default is
-wireless: it resolves the robot via mDNS at quadruped.local:8888 (so the
+wireless: it resolves the robot via mDNS at sesame-robot.local:8888 (so the
 robot can run on battery, untethered). If that fails it falls back to a USB
 serial port. Force either with connect(prefer="net"|"serial").
 
@@ -19,7 +19,7 @@ import socket
 import threading
 import time
 
-DEFAULT_HOST = "quadruped.local"
+DEFAULT_HOST = "sesame-robot.local"
 TCP_PORT = 8888
 BAUD = 115200
 

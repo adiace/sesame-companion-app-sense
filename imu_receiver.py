@@ -2,13 +2,13 @@
 """
 imu_receiver.py — print IMU events from the robot over TCP.
 
-Connects to quadruped.local:8888 and listens for JSON lines pushed by the
+Connects to sesame-robot.local:8888 and listens for JSON lines pushed by the
 robot when a physical event is detected. All other lines (command echoes,
 status) are ignored.
 
 USAGE
   python3 imu_receiver.py
-  python3 imu_receiver.py --host 192.168.68.64
+  python3 imu_receiver.py --host 192.168.1.42
   python3 imu_receiver.py --net          # WiFi only
   python3 imu_receiver.py --serial       # USB serial fallback
 """
@@ -23,7 +23,7 @@ import robot_link
 
 def main():
     ap = argparse.ArgumentParser(description="Print IMU events from the robot.")
-    ap.add_argument("--host",   help="robot address (default: quadruped.local)")
+    ap.add_argument("--host",   help="robot address (default: sesame-robot.local)")
     ap.add_argument("--serial", action="store_true", help="force USB serial")
     ap.add_argument("--net",    action="store_true", help="force WiFi")
     args = ap.parse_args()
