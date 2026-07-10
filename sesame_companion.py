@@ -151,7 +151,7 @@ _CMD_KEYWORDS: list = [
     ("bow down", "bow"), ("bow", "bow"),
     ("show off", "dance"), ("boogie", "dance"), ("dance", "dance"),
     ("go for a walk", "walk"), ("walk around", "walk"), ("walk", "walk"),
-    ("lie down", "rest"), ("lay down", "rest"), ("sleep", "rest"), ("rest", "rest"),
+    ("lie down", "rest"), ("lay down", "rest"), ("sleep", "rest"), ("rest", "rest"), ("keep", "rest"),
     ("swim", "swim"),
     ("shake", "shake"),
     ("shrug", "shrug"),
@@ -1154,12 +1154,15 @@ class RobotVoiceReceiver:
 
             # LLM (only if pre-check didn't match)
             if result is None:
+                # Keyword inference runs first — wins over LLM for unambiguous
+                # command phrases (e.g. "crab walk" → 'crab', not 'walk').
+                inferred = _infer_command(user_text)
                 result = _normalize_llm(self.llm.interpret_command(user_text))
-                if result.get("command") is None:
-                    inferred = _infer_command(user_text)
-                    if inferred:
-                        result["command"] = inferred
-                        print(f"[RobotVoice] Inferred command from speech: {inferred!r}")
+                if inferred:
+                    if result.get("command") != inferred:
+                        print(f"[RobotVoice] Keyword override: {result.get('command')!r} → {inferred!r}")
+                    result["command"] = inferred
+                    print(f"[RobotVoice] Inferred command from speech: {inferred!r}")
 
             response_text = result.get("response") or ""
             command       = result.get("command")
