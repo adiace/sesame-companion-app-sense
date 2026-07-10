@@ -263,6 +263,23 @@ happy, sad, angry, surprised, sleepy, love, excited, confused, default
 SHORT_SYSTEM_PROMPT = SYSTEM_PROMPT
 
 
+def _loudness_maximize(wav_path: str):
+    """Make a speech WAV as loud as possible without clipping: power-law
+    compression (|x|^0.6 lifts quiet parts) + peak normalization to -0.5dB."""
+    import wave as _wave
+    with _wave.open(wav_path, "rb") as w:
+        params = w.getparams()
+        pcm = w.readframes(w.getnframes())
+    x = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+    y = np.sign(x) * np.abs(x) ** 0.6
+    peak = float(np.abs(y).max())
+    if peak > 0:
+        y *= 0.94 / peak
+    with _wave.open(wav_path, "wb") as w:
+        w.setparams(params)
+        w.writeframes((y * 32767).astype(np.int16).tobytes())
+
+
 def _now_context() -> str:
     """Current date/time line appended to the system prompt at request time,
     so the LLM can answer 'what day is it?' instead of deflecting."""
@@ -330,17 +347,13 @@ def _text_to_wav_macos(text: str) -> bytes:
             ['afconvert', '-f', 'WAVE', '-d', 'LEI16@16000', '-c', '1', aiff, wav],
             check=True, capture_output=True, timeout=15
         )
-        # Boost WAV to near full scale using sox if available
+        # Loudness-maximize in Python (sox isn't installed — the old sox call
+        # silently no-op'd, so TTS went out at say's quiet default level).
+        # Power-law compression raises the average level, then peak-normalize.
         try:
-            boosted = tempfile.mktemp(suffix='.wav')
-            result = subprocess.run(
-                ['sox', wav, boosted, 'norm', '-1'],
-                capture_output=True, timeout=15
-            )
-            if result.returncode == 0:
-                os.replace(boosted, wav)
-        except Exception:
-            pass  # sox not installed — skip normalization
+            _loudness_maximize(wav)
+        except Exception as e:
+            print(f"[WARNING] TTS loudness processing failed: {e}")
         with open(wav, 'rb') as f:
             return f.read()
     except Exception as e:
