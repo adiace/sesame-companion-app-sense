@@ -52,7 +52,8 @@ except ImportError:
     print("[WARNING] pyaudio not available — using time-based animation")
 
 AVAILABLE_COMMANDS = [
-    "walk", "rest", "swim", "dance", "wave", "point", "stand",
+    "walk", "back", "left", "right",
+    "rest", "swim", "dance", "wave", "point", "stand",
     "cute", "pushup", "freaky", "bow", "worm", "shake", "shrug",
     "dead", "crab", "box", "idle", "stop"
 ]
@@ -76,21 +77,39 @@ _FACE_ALIASES = {
     "confused face": "confused", "unsure": "confused", "huh": "confused",
 }
 
+def _valid_command(c) -> Optional[str]:
+    """Validate a single command string, allowing an optional step count on
+    movement commands ('walk 5', 'left 2') — the firmware bounds the gait."""
+    if not isinstance(c, str):
+        return None
+    c = c.lower().strip()
+    if c in AVAILABLE_COMMANDS:
+        return c
+    parts = c.split()
+    if (len(parts) == 2 and parts[0] in ("walk", "back", "left", "right")
+            and parts[1].isdigit() and int(parts[1]) > 0):
+        return f"{parts[0]} {min(int(parts[1]), 50)}"
+    return None
+
+
 def _normalize_llm(result: dict) -> dict:
     """Validate and fix LLM JSON so command/face are always legal values."""
     cmd  = result.get("command")
     face = result.get("face")
 
-    # Normalise command
-    if isinstance(cmd, str):
-        cmd = cmd.lower().strip()
-        if cmd in ("null", "none", ""):
-            cmd = None
-        elif cmd not in AVAILABLE_COMMANDS:
+    # Chained commands: LLM may return a list ("walk 5 steps then turn left"
+    # → ["walk 5", "left"]). Keep the valid entries; empty list → None.
+    if isinstance(cmd, list):
+        chain = [v for v in (_valid_command(c) for c in cmd) if v]
+        cmd = chain if len(chain) > 1 else (chain[0] if chain else None)
+    elif isinstance(cmd, str):
+        valid = _valid_command(cmd)
+        if valid is None:
             # if the model put a face name in command, move it to face
-            if cmd in AVAILABLE_FACES and face is None:
-                face = cmd
-            cmd = None
+            c = cmd.lower().strip()
+            if c in AVAILABLE_FACES and face is None:
+                face = c
+        cmd = valid
     else:
         cmd = None
 
@@ -148,6 +167,18 @@ def _infer_command(text: str) -> Optional[str]:
     for phrase, cmd in _CMD_KEYWORDS:
         if phrase in t:
             return cmd
+
+    # Fuzzy rescue for short utterances: Whisper mishears single command words
+    # spoken through the robot's muffled mic ("dance" → "done?"). Only applied
+    # when the whole utterance is 1-2 words — longer speech is real chat.
+    words = re.findall(r"[a-z]+", t)
+    if 1 <= len(words) <= 2:
+        import difflib
+        for w in words:
+            m = difflib.get_close_matches(w, AVAILABLE_COMMANDS, n=1, cutoff=0.6)
+            if m and m[0] not in ("idle", "stop"):   # too risky to fuzz these
+                print(f"[Fuzzy] {w!r} → {m[0]!r}")
+                return m[0]
     return None
 
 ACTION_FACES = [
@@ -162,6 +193,9 @@ Use "I" always. Keep every response under 12 words. Be warm, witty, and fun for 
 
 ═══ WHAT YOU CAN DO (your body) ═══
 walk      → walk forward on all four legs
+back      → walk backward
+left      → turn left
+right     → turn right
 rest      → lie down and relax
 swim      → wiggle legs like swimming
 dance     → boogie and shake
@@ -192,6 +226,8 @@ happy, sad, angry, surprised, sleepy, love, excited, confused, default
 4. "response" is what you say out loud — short, fun, in character. 1-5 words for actions, 1-2 sentences for chat.
 5. If you truly cannot match a request to a command, set command to null and just chat.
 6. Use very simple words — no big words, no sarcasm, no jokes that need explaining. Never be scary.
+7. Movement commands walk/back/left/right take an optional step count: "walk 5" = walk 5 steps then stop.
+8. For multi-step requests, set "command" to a LIST done in order: "walk 5 steps then turn left" → ["walk 5", "left"].
 
 ═══ OUTPUT FORMAT ═══
 {{"command": "<action or null>", "face": "<face>", "response": "<what you say>", "reasoning": "<one short line>"}}
@@ -219,7 +255,10 @@ happy, sad, angry, surprised, sleepy, love, excited, confused, default
 {{"command": null, "face": "confused", "response": "Uh... seven? Maybe?", "reasoning": "math question, no movement"}}
 
 "Stop!"
-{{"command": "stop", "face": "surprised", "response": "Okay okay, stopping!", "reasoning": "stop command"}}"""
+{{"command": "stop", "face": "surprised", "response": "Okay okay, stopping!", "reasoning": "stop command"}}
+
+"Walk 5 steps and then turn left."
+{{"command": ["walk 5", "left"], "face": "excited", "response": "Here I go!", "reasoning": "chained: bounded walk then turn"}}"""
 
 SHORT_SYSTEM_PROMPT = SYSTEM_PROMPT
 
@@ -236,14 +275,20 @@ def _now_context() -> str:
 # ── Local STT (faster_whisper) ─────────────────────────────────────────────────
 
 _WHISPER_PROMPT = (
-    "Robot commands: walk, rest, dance, crab walk, wave, stand, pushup, box, "
-    "swim, bow, stop, spin, shake, worm, shrug, cute, freaky, point, dead."
+    "Voice commands for a pet robot, e.g.: walk, walk 5 steps, turn left, "
+    "turn right, go back, rest, dance, dance for me, crab walk, wave, stand, "
+    "stand up, pushup, box, swim, bow, stop, shake, worm, shrug, cute, "
+    "freaky, point, play dead, tell me a joke, what time is it, is it Monday."
 )
 
 def _load_whisper():
     try:
         from faster_whisper import WhisperModel
-        return WhisperModel("base", device="cpu", compute_type="int8")
+        # "small" is markedly better than "base" on the robot's muffled enclosed
+        # mic ("dance" was heard as "Done?"). ~1-2s slower per clip on CPU int8.
+        model = os.getenv("WHISPER_MODEL", "small")
+        print(f"[INFO] Whisper model: {model}")
+        return WhisperModel(model, device="cpu", compute_type="int8")
     except ImportError:
         print("[WARNING] faster_whisper not installed — run: pip install faster-whisper")
         return None
@@ -638,25 +683,54 @@ class SesameRobotController:
         self.base_url = f"http://{robot_ip}"
         self._sock: Optional[socket.socket] = None
         self._sock_lock = threading.Lock()
+        # macOS mDNS resolution of .local names fails often (especially from
+        # Python's getaddrinfo). Persist the last IP that worked so every app
+        # start has a usable candidate even before the name resolves once.
+        self._ip_file = pathlib.Path.home() / ".sesame" / "robot_ip"
+        self._last_ip: Optional[str] = None
+        try:
+            ip = self._ip_file.read_text().strip()
+            if ip:
+                self._last_ip = ip
+                print(f"[TCP] Cached robot IP: {ip}")
+        except OSError:
+            pass
         if self.is_mock:
             print("[INFO] Robot Controller running in MOCK mode")
 
+    def remember_ip(self, ip: str):
+        """Record a known-good robot IP (from a successful connect, or from the
+        robot connecting to us on the voice port)."""
+        if not ip or ip == self._last_ip:
+            self._last_ip = ip or self._last_ip
+            return
+        self._last_ip = ip
+        try:
+            self._ip_file.parent.mkdir(exist_ok=True)
+            self._ip_file.write_text(ip)
+        except OSError:
+            pass
+
     def _connect(self) -> bool:
         """Open (or re-open) the persistent TCP socket. Returns True on success."""
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            s.settimeout(3)
-            s.connect((self.robot_ip, self.TCP_PORT))
-            s.settimeout(None)
-            self._sock = s
-            print(f"[TCP] Connected to {self.robot_ip}:{self.TCP_PORT}")
-            self._on_robot_connected()
-            return True
-        except Exception as e:
-            print(f"[TCP] Connect failed: {e}")
-            self._sock = None
-            return False
+        for host in dict.fromkeys([self.robot_ip, self._last_ip]):  # dedup, keep order
+            if not host:
+                continue
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                s.settimeout(3)
+                s.connect((host, self.TCP_PORT))
+                s.settimeout(None)
+                self._sock = s
+                self.remember_ip(s.getpeername()[0])
+                print(f"[TCP] Connected to {host}:{self.TCP_PORT} ({self._last_ip})")
+                self._on_robot_connected()
+                return True
+            except Exception as e:
+                print(f"[TCP] Connect to {host} failed: {e}")
+        self._sock = None
+        return False
 
     def _on_robot_connected(self):
         """Called each time a TCP connection to the robot is established."""
@@ -685,10 +759,16 @@ class SesameRobotController:
                 else:
                     raise
 
-    def send_command(self, command: str, face: Optional[str] = None) -> Dict[str, Any]:
+    def send_command(self, command, face: Optional[str] = None) -> Dict[str, Any]:
         print(f"   TX: command={command!r} face={face!r}")
         if self.is_mock:
             return {"status": "success", "mock": True}
+        # Chained commands ("walk 5 steps then turn left" → ["walk 5", "left"]):
+        # run in a background thread so TTS/response isn't blocked.
+        if isinstance(command, list):
+            threading.Thread(target=self._run_chain, args=(command, face),
+                             daemon=True).start()
+            return {"status": "ok", "chain": len(command)}
         try:
             # Send face change first so it's visible while the motion starts
             if face and command != "idle":
@@ -702,6 +782,27 @@ class SesameRobotController:
             print(f"[TCP] send_command failed: {e}")
             return {"error": str(e)}
 
+    def _run_chain(self, commands: list, face: Optional[str]):
+        """Execute commands sequentially. Bounded moves ('walk 5') clear the
+        robot's currentCommand when done, so we poll status until idle before
+        sending the next step. Non-clearing poses fall through on the timeout —
+        the next command overrides them (the firmware aborts the running pose)."""
+        try:
+            if face:
+                self._tcp_send(f"face {face}")
+            for i, cmd in enumerate(commands):
+                print(f"   TX: chain {i+1}/{len(commands)}: {cmd!r}")
+                self._tcp_send(cmd)
+                time.sleep(1.0)   # let the robot pick the command up
+                deadline = time.time() + 12
+                while time.time() < deadline:
+                    st = self.get_status()
+                    if st.get("currentCommand", "?") == "":
+                        break
+                    time.sleep(0.5)
+        except Exception as e:
+            print(f"[TCP] chain failed: {e}")
+
     def get_status(self) -> Dict[str, Any]:
         if self.is_mock:
             return {"currentCommand": "idle", "currentFace": "happy",
@@ -711,6 +812,13 @@ class SesameRobotController:
             r.raise_for_status()
             return r.json()
         except requests.exceptions.RequestException as e:
+            if self._last_ip and self._last_ip not in self.base_url:
+                try:
+                    r = requests.get(f"http://{self._last_ip}/api/status", timeout=5)
+                    r.raise_for_status()
+                    return r.json()
+                except requests.exceptions.RequestException:
+                    pass
             return {"error": str(e)}
 
     def stop(self) -> Dict[str, Any]:
@@ -971,6 +1079,10 @@ class RobotVoiceReceiver:
     def _handle_connection(self, conn: socket.socket, addr):
         robot_ip = addr[0]
         print(f"[RobotVoice] Connection from {robot_ip}")
+        # The robot just told us its IP — seed the command controller's
+        # fallback so movement commands work even when .local mDNS is flaky.
+        if self.robot is not None:
+            self.robot.remember_ip(robot_ip)
         try:
             conn.settimeout(20.0)
 
@@ -979,12 +1091,34 @@ class RobotVoiceReceiver:
             print(f"[RobotVoice] Receiving {pcm_len} bytes ({pcm_len/32000:.1f}s) PCM")
             pcm = self._recv_exact(conn, pcm_len)
 
+            # Debug: keep the last clip so we can hear exactly what the robot
+            # recorded: afplay ~/.sesame/last_heard.wav
+            try:
+                import wave
+                dbg = pathlib.Path.home() / ".sesame" / "last_heard.wav"
+                dbg.parent.mkdir(exist_ok=True)
+                with wave.open(str(dbg), "wb") as w:
+                    w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
+                    w.writeframes(pcm)
+            except Exception:
+                pass
+
             # STT — no vad_filter: robot already confirmed wake word, so audio
             # contains real speech; vad_filter discards short commands like "crab walk"
             audio_np = (np.frombuffer(pcm, dtype=np.int16)
                         .astype(np.float32) / 32768.0)
+            # The robot's enclosed mic is a steep low-pass: measured 90% of
+            # speech energy below 1kHz, ~3% above 4kHz — consonants (/s/, /t/)
+            # vanish, so "stand" arrives as "and". Pre-emphasis tilts the
+            # spectrum back (+6dB/octave toward the highs), then peak-normalize.
+            audio_np = np.concatenate((audio_np[:1],
+                                       audio_np[1:] - 0.95 * audio_np[:-1]))
+            peak = float(np.abs(audio_np).max())
+            if peak > 0.005:
+                audio_np = audio_np * (0.9 / peak)
             segments, _ = self._whisper.transcribe(
                 audio_np, language="en",
+                beam_size=5, best_of=5,
                 initial_prompt=_WHISPER_PROMPT)
             user_text = " ".join(s.text for s in segments).strip()
             print(f"[RobotVoice] Heard: {user_text!r}")
@@ -1029,8 +1163,9 @@ class RobotVoiceReceiver:
                 conn.sendall(wav_bytes)
                 print(f"[RobotVoice] WAV sent to robot")
 
-            # Send command/face to robot via HTTP (non-blocking)
-            if command and command in AVAILABLE_COMMANDS:
+            # Send command/face to robot (non-blocking). _normalize_llm already
+            # validated: strings (incl. "walk 5") and chains (lists) are legal.
+            if command:
                 threading.Thread(
                     target=self.robot.send_command,
                     args=(command, face),
