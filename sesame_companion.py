@@ -77,12 +77,29 @@ _FACE_ALIASES = {
     "confused face": "confused", "unsure": "confused", "huh": "confused",
 }
 
+_CMD_ALIASES = {
+    "stand up": "stand", "get up": "stand", "standing": "stand",
+    "lay down": "rest", "lie down": "rest", "go to sleep": "rest",
+    "go to rest": "rest", "sleep": "rest",
+    "go forward": "walk", "move forward": "walk", "walk forward": "walk",
+    "go back": "back", "move back": "back", "walk back": "back",
+    "walk backward": "back", "go backward": "back",
+    "turn left": "left", "turn right": "right",
+    "say hi": "wave", "wave hello": "wave",
+    "crab walk": "crab",
+    "push up": "pushup", "push-up": "pushup",
+    "play dead": "dead", "fall over": "dead", "fall down": "dead",
+    "the worm": "worm", "belly flop": "worm",
+    "bow down": "bow",
+    "show off": "dance", "boogie": "dance",
+}
+
 def _valid_command(c) -> Optional[str]:
-    """Validate a single command string, allowing an optional step count on
-    movement commands ('walk 5', 'left 2') — the firmware bounds the gait."""
+    """Validate a single command string, normalising LLM variants to firmware names."""
     if not isinstance(c, str):
         return None
     c = c.lower().strip()
+    c = _CMD_ALIASES.get(c, c)  # normalise before checking
     if c in AVAILABLE_COMMANDS:
         return c
     parts = c.split()
