@@ -1118,6 +1118,9 @@ class RobotVoiceReceiver:
                 conn.sendall(struct.pack("<I", 0))
                 return
 
+            self._reset_idle()
+            self._wake_robot()
+
             # Pre-LLM layers (vision, quick response) — same pipeline as process_input()
             result = None
             if self.pre_check:
