@@ -1118,7 +1118,6 @@ class RobotVoiceReceiver:
                 conn.sendall(struct.pack("<I", 0))
                 return
 
-            self._reset_idle()
 
             # Pre-LLM layers (vision, quick response) — same pipeline as process_input()
             result = None
@@ -1190,9 +1189,6 @@ class RobotVoiceReceiver:
 class SesameCompanionApp:
     """Main application: LLM + robot control + voice + robot voice receiver."""
 
-    IDLE_PHRASE_SECS = 180   # 3 min → speak idle phrase
-    IDLE_SLEEP_SECS  = 300   # 5 min → robot sleep
-
     def __init__(self, robot_ip: str, sesame_local: bool, gemini_api_key: str,
                  voice_enabled: bool = True, tts_engine: str = "pyttsx3",
                  wake_word: str = "hey sesame", wake_word_mode: bool = False):
@@ -1230,9 +1226,6 @@ class SesameCompanionApp:
         else:
             self._quick = None
 
-        self._last_interaction = time.time()
-        self._idle_phrase_fired = False
-
         self.imu = None  # IMU tracker removed — was adding latency with no benefit
 
         # Robot voice receiver (handles ESP-SR wake word audio from robot)
@@ -1242,10 +1235,6 @@ class SesameCompanionApp:
             on_interaction=None   # set by GUI: app.robot_voice.on_interaction = callback
         )
         self.robot_voice.pre_check = self._voice_pre_check
-
-        # Start idle monitor thread
-        t = threading.Thread(target=self._idle_loop, daemon=True)
-        t.start()
 
         # Vision receiver (camera JPEG stream from robot on port 8891)
         if _VISION_AVAILABLE and os.getenv("VISION_PASSIVE", "true").lower() == "true":
@@ -1278,19 +1267,14 @@ class SesameCompanionApp:
         """Start the TCP server that receives audio from the robot's wake word."""
         self.robot_voice.start()
 
-    def _reset_idle(self):
-        self._last_interaction = time.time()
-        self._idle_phrase_fired = False
-
     def _on_imu_event(self, event_name: str):
         """Called from IMU listener thread on PICKUP, TAPPED, etc."""
-        self._reset_idle()
+        pass
 
     def _voice_pre_check(self, text: str) -> Optional[dict]:
         """Check vision and quick response layers for voice input from the robot mic.
         Returns a result dict if matched, None to fall through to the LLM.
         Also executes the matched command so the caller just needs the response text."""
-        self._reset_idle()
 
         # Vision command layer — only if camera is actually streaming
         if self._vision_cmd_layer and self.vision and self.vision.has_camera:
@@ -1325,7 +1309,6 @@ class SesameCompanionApp:
 
     def _on_passive_reaction(self, reaction: str):
         """Called by RobotVisionReceiver when a passive trigger fires."""
-        self._reset_idle()
         if self.on_passive_reaction:
             try:
                 self.on_passive_reaction(reaction)
@@ -1349,29 +1332,8 @@ class SesameCompanionApp:
         if cmd:
             self.robot.send_command(cmd, face)
 
-    def _idle_loop(self):
-        _IDLE_PHRASES = [
-            "Is anyone there?",
-            "I'm bored — wanna play?",
-            "Hey, come play with me!",
-            "Helloooo? I miss you!",
-        ]
-        while True:
-            time.sleep(10)
-            idle_secs = time.time() - self._last_interaction
-            if idle_secs >= self.IDLE_SLEEP_SECS:
-                print("[Idle] 5 min idle — resting servos")
-                self.robot.send_command("rest")
-                if hasattr(self.ai, 'clear_history'):
-                    self.ai.clear_history()
-            elif idle_secs >= self.IDLE_PHRASE_SECS and not self._idle_phrase_fired:
-                print("[Idle] 3 min idle — showing bored face")
-                self.robot.send_command("idle", "confused")
-                self._idle_phrase_fired = True
-
     def process_input(self, user_input: str) -> tuple:
         """Process laptop-typed/spoken input through AI and control robot."""
-        self._reset_idle()
 
         # Vision command layer (pre-LLM, checked first)
         if self._vision_cmd_layer:
