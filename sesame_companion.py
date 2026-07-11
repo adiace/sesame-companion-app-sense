@@ -141,45 +141,6 @@ def _normalize_llm(result: dict) -> dict:
 
 
 # Keyword fallback when LLM returns cmd=None. Checked in order; first match wins.
-_CMD_KEYWORDS: list = [
-    ("crab walk", "crab"), ("crab", "crab"),
-    ("box mode", "box"), ("boxing stance", "box"), ("box", "box"),
-    ("push up", "pushup"), ("push-up", "pushup"), ("pushup", "pushup"),
-    ("play dead", "dead"), ("fall over", "dead"), ("dead", "dead"),
-    ("belly flop", "worm"), ("the worm", "worm"), ("worm", "worm"),
-    ("say hi", "wave"), ("wave", "wave"),
-    ("bow down", "bow"), ("bow", "bow"),
-    ("show off", "dance"), ("boogie", "dance"), ("dance", "dance"),
-    ("go for a walk", "walk"), ("walk around", "walk"), ("walk", "walk"),
-    ("lie down", "rest"), ("lay down", "rest"), ("sleep", "rest"), ("rest", "rest"), ("keep", "rest"),
-    ("swim", "swim"),
-    ("shake", "shake"),
-    ("shrug", "shrug"),
-    ("point", "point"),
-    ("cute", "cute"),
-    ("freaky", "freaky"),
-    ("stand up", "stand"), ("stand", "stand"),
-    ("stop", "stop"),
-]
-
-def _infer_command(text: str) -> Optional[str]:
-    t = text.lower()
-    for phrase, cmd in _CMD_KEYWORDS:
-        if phrase in t:
-            return cmd
-
-    # Fuzzy rescue for short utterances: Whisper mishears single command words
-    # spoken through the robot's muffled mic ("dance" → "done?"). Only applied
-    # when the whole utterance is 1-2 words — longer speech is real chat.
-    words = re.findall(r"[a-z]+", t)
-    if 1 <= len(words) <= 2:
-        import difflib
-        for w in words:
-            m = difflib.get_close_matches(w, AVAILABLE_COMMANDS, n=1, cutoff=0.6)
-            if m and m[0] not in ("idle", "stop"):   # too risky to fuzz these
-                print(f"[Fuzzy] {w!r} → {m[0]!r}")
-                return m[0]
-    return None
 
 ACTION_FACES = [
     "walk", "rest", "swim", "dance", "wave", "point", "stand",
@@ -1149,15 +1110,7 @@ class RobotVoiceReceiver:
 
             # LLM (only if pre-check didn't match)
             if result is None:
-                # Keyword inference runs first — wins over LLM for unambiguous
-                # command phrases (e.g. "crab walk" → 'crab', not 'walk').
-                inferred = _infer_command(user_text)
                 result = _normalize_llm(self.llm.interpret_command(user_text))
-                if inferred:
-                    if result.get("command") != inferred:
-                        print(f"[RobotVoice] Keyword override: {result.get('command')!r} → {inferred!r}")
-                    result["command"] = inferred
-                    print(f"[RobotVoice] Inferred command from speech: {inferred!r}")
 
             response_text = result.get("response") or ""
             command       = result.get("command")
@@ -1263,9 +1216,7 @@ class SesameCompanionApp:
         self._last_interaction = time.time()
         self._idle_phrase_fired = False
 
-        # IMU state — on_event resets idle timer and wakes robot
-        self.imu = ImuStateTracker(on_event=self._on_imu_event)
-        self.imu.start(robot_ip)
+        self.imu = None  # IMU tracker removed — was adding latency with no benefit
 
         # Robot voice receiver (handles ESP-SR wake word audio from robot)
         self.robot_voice = RobotVoiceReceiver(
@@ -1472,22 +1423,16 @@ class SesameCompanionApp:
 
         # Profile context for richer LLM responses
         mem_ctx = self.memory.profile_context()
-        imu_ctx = self.imu.context_string()
 
         if hasattr(self.ai, 'interpret_command'):
             import inspect
             sig = inspect.signature(self.ai.interpret_command)
             if 'memory_context' in sig.parameters:
-                interpretation = _normalize_llm(self.ai.interpret_command(user_input, imu_ctx, mem_ctx))
+                interpretation = _normalize_llm(self.ai.interpret_command(user_input, "", mem_ctx))
             else:
-                interpretation = _normalize_llm(self.ai.interpret_command(user_input, imu_ctx))
+                interpretation = _normalize_llm(self.ai.interpret_command(user_input, ""))
         else:
-            interpretation = _normalize_llm(self.ai.interpret_command(user_input, imu_ctx))
-
-        if interpretation.get("command") is None:
-            inferred = _infer_command(user_input)
-            if inferred:
-                interpretation["command"] = inferred
+            interpretation = _normalize_llm(self.ai.interpret_command(user_input, ""))
 
         # Update profile and cache
         self.memory.update_profile_from_text(user_input)
