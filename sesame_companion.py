@@ -1169,18 +1169,8 @@ class RobotVoiceReceiver:
             face          = result.get("face")
             print(f"[RobotVoice] LLM → cmd={command!r} face={face!r} resp={response_text!r}")
 
-            # TTS → WAV
-            wav_bytes = _text_to_wav_macos(response_text)
-            print(f"[RobotVoice] TTS → {len(wav_bytes)} bytes WAV")
-
-            # Send WAV back to robot (plays on robot speaker)
-            conn.sendall(struct.pack("<I", len(wav_bytes)))
-            if wav_bytes:
-                conn.sendall(wav_bytes)
-                print(f"[RobotVoice] WAV sent to robot")
-
-            # Send command/face to robot (non-blocking). _normalize_llm already
-            # validated: strings (incl. "walk 5") and chains (lists) are legal.
+            # Send movement command immediately — before TTS so the robot starts
+            # moving right away instead of waiting for the full audio round-trip.
             if command:
                 threading.Thread(
                     target=self.robot.send_command,
@@ -1193,6 +1183,16 @@ class RobotVoiceReceiver:
                     args=("idle", face),
                     daemon=True
                 ).start()
+
+            # TTS → WAV (generated after command dispatch so movement starts first)
+            wav_bytes = _text_to_wav_macos(response_text)
+            print(f"[RobotVoice] TTS → {len(wav_bytes)} bytes WAV")
+
+            # Send WAV back to robot (plays on robot speaker)
+            conn.sendall(struct.pack("<I", len(wav_bytes)))
+            if wav_bytes:
+                conn.sendall(wav_bytes)
+                print(f"[RobotVoice] WAV sent to robot")
 
             # Notify GUI
             if self.on_interaction:
