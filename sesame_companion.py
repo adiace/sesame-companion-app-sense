@@ -1119,7 +1119,6 @@ class RobotVoiceReceiver:
                 return
 
             self._reset_idle()
-            self._wake_robot()
 
             # Pre-LLM layers (vision, quick response) — same pipeline as process_input()
             result = None
@@ -1231,8 +1230,6 @@ class SesameCompanionApp:
         else:
             self._quick = None
 
-        # Idle/sleep state
-        self._sleeping = False
         self._last_interaction = time.time()
         self._idle_phrase_fired = False
 
@@ -1285,25 +1282,15 @@ class SesameCompanionApp:
         self._last_interaction = time.time()
         self._idle_phrase_fired = False
 
-    def _wake_robot(self):
-        if self._sleeping:
-            print("[Idle] Waking robot")
-            self.robot.send_command("wake")
-            time.sleep(0.3)
-            self._sleeping = False
-
     def _on_imu_event(self, event_name: str):
         """Called from IMU listener thread on PICKUP, TAPPED, etc."""
         self._reset_idle()
-        if event_name in ("PICKUP", "TAPPED"):
-            self._wake_robot()
 
     def _voice_pre_check(self, text: str) -> Optional[dict]:
         """Check vision and quick response layers for voice input from the robot mic.
         Returns a result dict if matched, None to fall through to the LLM.
         Also executes the matched command so the caller just needs the response text."""
         self._reset_idle()
-        self._wake_robot()
 
         # Vision command layer — only if camera is actually streaming
         if self._vision_cmd_layer and self.vision and self.vision.has_camera:
@@ -1339,7 +1326,6 @@ class SesameCompanionApp:
     def _on_passive_reaction(self, reaction: str):
         """Called by RobotVisionReceiver when a passive trigger fires."""
         self._reset_idle()
-        self._wake_robot()
         if self.on_passive_reaction:
             try:
                 self.on_passive_reaction(reaction)
@@ -1373,12 +1359,9 @@ class SesameCompanionApp:
         while True:
             time.sleep(10)
             idle_secs = time.time() - self._last_interaction
-            if self._sleeping:
-                continue
             if idle_secs >= self.IDLE_SLEEP_SECS:
-                print("[Idle] 5 min idle — putting robot to sleep")
-                self.robot.send_command("sleep")
-                self._sleeping = True
+                print("[Idle] 5 min idle — resting servos")
+                self.robot.send_command("rest")
                 if hasattr(self.ai, 'clear_history'):
                     self.ai.clear_history()
             elif idle_secs >= self.IDLE_PHRASE_SECS and not self._idle_phrase_fired:
@@ -1389,7 +1372,6 @@ class SesameCompanionApp:
     def process_input(self, user_input: str) -> tuple:
         """Process laptop-typed/spoken input through AI and control robot."""
         self._reset_idle()
-        self._wake_robot()
 
         # Vision command layer (pre-LLM, checked first)
         if self._vision_cmd_layer:
