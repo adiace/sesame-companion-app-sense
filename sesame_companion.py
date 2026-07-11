@@ -347,13 +347,8 @@ def _text_to_wav_macos(text: str) -> bytes:
             ['afconvert', '-f', 'WAVE', '-d', 'LEI16@16000', '-c', '1', aiff, wav],
             check=True, capture_output=True, timeout=15
         )
-        # Loudness-maximize in Python (sox isn't installed — the old sox call
-        # silently no-op'd, so TTS went out at say's quiet default level).
-        # Power-law compression raises the average level, then peak-normalize.
-        try:
-            _loudness_maximize(wav)
-        except Exception as e:
-            print(f"[WARNING] TTS loudness processing failed: {e}")
+        # Loudness maximization removed — GAIN pin at GND gives 12 dB at the amp,
+        # which is sufficient. Skipping saves ~100-200ms per response.
         with open(wav, 'rb') as f:
             return f.read()
     except Exception as e:
@@ -1131,7 +1126,7 @@ class RobotVoiceReceiver:
                 audio_np = audio_np * (0.9 / peak)
             segments, _ = self._whisper.transcribe(
                 audio_np, language="en",
-                beam_size=5, best_of=5,
+                beam_size=1,
                 initial_prompt=_WHISPER_PROMPT)
             user_text = " ".join(s.text for s in segments).strip()
             print(f"[RobotVoice] Heard: {user_text!r}")
